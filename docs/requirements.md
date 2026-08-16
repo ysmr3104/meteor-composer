@@ -353,10 +353,45 @@ result   = master + residual × feathered_mask
 
 ### 8.2 動作環境・配布
 
-- PixInsight 1.8.9+（V8 エンジンの機能を使う場合は 1.9.4+ を要検討）
+- **PixInsight 1.9.4 以降（V8 専用）**。SpiderMonkey（1.9.3 以前）には対応しない
 - 外部依存なし（Python 不要、サードパーティ製プロセス不要）
-- `pixinsight-scripts` リポジトリの updates.xri 経由で配信
+- `pixinsight-scripts` リポジトリの updates.xri 経由で配信。`<platform version="1.9.4:9.9.9">` の 1 パッケージのみ
 - CPD 登録完了後にスクリプトへ署名
+
+### 8.3 スクリプトメニューへの登録
+
+機能カテゴリとベンダーカテゴリの両方に登録する。`#feature-id` は 1 つのディレクティブ内で `|` 区切りで複数のメニュー位置を指定できる。
+
+```
+#feature-id  MeteorComposer : Image Analysis > MeteorComposer | ysmrastro > MeteorComposer
+```
+
+PixInsight 純正スクリプト（`AnnotateImage : Astrometry > ... | Render > ...`）およびサードパーティの CosmicPhotons（`Utilities > ... | CosmicPhotons > ...`）が同じ方式を採っている。機能から探すユーザーと作者から探すユーザーの両方に届く。
+
+#### 既存 2 本の同時掲載（Phase 1 リリース作業に含む）
+
+**本スクリプトの公開に合わせて、ManualImageSolver / SplitImageSolver も `ysmrastro` カテゴリへ同時掲載する。** これにより `Script > ysmrastro` に 3 本が並ぶ。
+
+```
+#feature-id  ManualImageSolver : Astrometry > ManualImageSolver | ysmrastro > ManualImageSolver
+#feature-id  SplitImageSolver  : Astrometry > SplitImageSolver  | ysmrastro > SplitImageSolver
+```
+
+機能カテゴリ（`Astrometry`）は残す。プレートソルバーを探すユーザーは標準の `Astrometry` を見るため、そこから外すと発見性が落ちる。
+
+**必要な作業**（各ソースリポジトリ側）:
+
+1. `#feature-id` 行を変更
+2. パッチバージョンを上げる（例: ManualImageSolver 2.0.0 → 2.0.1）
+3. PixInsight の CodeSign で `.js` に再署名
+4. `build-*.sh` でパッケージを再ビルド
+5. `pixinsight-scripts` で `integrate.sh` を実行し、`updates.xri` を再生成・再署名
+
+**判断が必要な点**:
+
+- **SpiderMonkey 版（ManualImageSolver 1.4.1 / SplitImageSolver 1.2.0）も更新するか。** 更新しない場合、PixInsight 1.9.3 以前のユーザーには `ysmrastro` メニューが出ない。3 本を並べて見せることが目的なので、MeteorComposer 自体が 1.9.4 以降専用である以上、**SpiderMonkey 版は据え置きでよい**と考えられる
+- メニュー項目の変更だけで更新通知が飛ぶため、リリースノートに「機能変更なし、メニュー登録先の追加のみ」と明記する
+- `#feature-id` を変更すると古いメニュー項目が残る場合がある。動作確認時は **Script > Feature Scripts** でのリフレッシュも試すこと
 
 ---
 
@@ -364,21 +399,31 @@ result   = master + residual × feathered_mask
 
 | フェーズ | 内容 |
 |---|---|
-| Phase 1 | Stage 1（検出）＋ Stage 2（スクリーニング UI）。除外領域は Tier 1 のみ |
+| Phase 1 | Stage 1（検出）＋ Stage 2（スクリーニング UI）。除外領域は Tier 1 のみ。**公開する** |
 | Phase 2 | 衛星・飛行機の分類（3rd pass）、除外領域 Tier 2、パラメータ調整 UI |
 | Phase 3 | Stage 3（マスク生成） |
 | Phase 4 | Stage 4（コンポジット生成） |
 | Phase 5 | 除外領域 Tier 3（WCS 連携）、輻射点算出等の測定機能 |
 
+Phase 1 は公開を伴うため、実装のほかに以下が作業範囲に含まれる。
+
+- スクリプトへの署名（CPD 登録の反映が前提）
+- `build-release.sh` 相当のビルドスクリプト作成
+- `pixinsight-scripts/integrate.sh` の `SOURCES` への追記
+- ユーザー向けドキュメント（README の使い方、パラメータの説明）
+- **既存 2 本の `ysmrastro` カテゴリ同時掲載**（8.3 参照）
+
 ---
 
 ## 10. 未決事項
 
-- [ ] **コンポジットの基準を星基準とするか地上基準とするか。** master light ベースという方針からは星基準の想定だが、固定撮影ユーザーは地上基準を望むことが多い
-- [ ] 多角形マスクを実装するか（現状は優先度低と判断）
-- [ ] Tier 3（WCS からの地平線算出）の実装可否と優先度
-- [ ] PixInsight のスクリプトメニュー上のカテゴリ（既存 2 本は Astrometry。本スクリプトは別カテゴリが妥当か）
-- [ ] リリース単位（Phase ごとにリリースするか、Stage 4 まで揃えてからか）
+いずれも **Phase 1 の着手を妨げない**。実装しながら判断できるもの、あるいは後続 Phase の話。
+
+- [ ] **コンポジットの基準を星基準とするか地上基準とするか**（Phase 4）
+  - master light ベースという方針からは星基準の想定だが、固定撮影ユーザーは地上基準を望むことが多い
+  - Stage 1 の候補データは registered 座標＋フレーム識別子を持つため、そこからどちらの基準にも変換できる。**今決めてもデータ構造は変わらない**ので、実際に 1 枚作ってから判断してよい
+- [ ] 多角形マスクを実装するか（Tier 1 の半平面が動いてから判断。現状は優先度低）
+- [ ] Tier 3（WCS からの地平線算出）の実装可否と優先度（Phase 5）
 - [ ] **リリース時にリポジトリを public 化し、main ブランチ保護を設定する**
   - 現在 private。GitHub Free プランでは private リポジトリに branch protection / ruleset のいずれも適用できない（HTTP 403）ため保護は未設定
   - 既存 4 リポジトリはすべて public で main 保護済み（PR 必須・承認 0 件・管理者にも強制・force push / 削除禁止）
@@ -386,8 +431,18 @@ result   = master + residual × feathered_mask
 
 ### 決定済み事項
 
-- スクリプト名・リポジトリ名は `MeteorComposer` / `ysmr3104/meteor-composer`（2026-08-16 決定）
+すべて 2026-08-16 決定。
+
+- **スクリプト名・リポジトリ名**: `MeteorComposer` / `ysmr3104/meteor-composer`
   - Phase 1 は検出とスクリーニングのみで合成機能を持たないが、最終形の名前で通し、README で対応 Phase を明示する
+- **対応エンジン**: V8 専用（PixInsight 1.9.4 以降）。SpiderMonkey には対応しない
+  - 既存 2 本が両対応なのは SpiderMonkey で書いたものを移植した経緯によるもので、新規スクリプトには当てはまらない
+  - 二重ビルド・2 パッケージ分の署名とテストという永続的なコストを回避する
+- **リリース単位**: Phase 1 完成時に公開する
+  - 検出＋スクリーニングだけでも「大量の連番から流星が写ったコマを探す」ツールとして単体で完結した価値がある
+  - **Phase 1 の作業範囲に、署名・パッケージング・ユーザー向けドキュメント・`integrate.sh` への追記が含まれる**
+  - 他のユーザーから実データのフィードバックを得られる利点が大きい
+- **スクリプトメニューの登録先**: `Image Analysis > MeteorComposer | ysmrastro > MeteorComposer`（8.3 参照）
 
 ### 実装前に確認が必要な PJSR API
 
