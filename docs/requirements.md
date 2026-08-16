@@ -350,6 +350,53 @@ Stage 1 と 2 の間で JSON に永続化することで、検出をやり直さ
 - **セッション保存・復元** — Settings API
 - **Export / Import** — 候補リストの JSON 入出力
 
+流用元は **`manual-image-solver` 2.0.0（V8 版）の `ImagePreviewControl`**。`class extends ScrollBox` で書かれており、ズーム / パン / クリック選択 / マーカー描画 / 表示回転を備える。そのまま使える。
+
+#### プレビュー画像の生成にネイティブ API を使う（2026-08-17 調査）
+
+**`manual-image-solver` の `createStretchedBitmap()` は流用しない。** 同関数は 2048×1365 の per-pixel ループで、1 フレームあたり `image.sample()` 3 回 + `bmp.setPixel()` 1 回 × 280 万回 ≒ 1100 万回の PJSR 呼び出しになる。プレートソルブは 1 枚を 1 回変換するだけなので成立していたが、**94〜291 枚をめくるスクリーニングでは支配的なコストになる。**
+
+PJSR 公式リファレンス（`/Applications/PixInsight/doc/pjsr/objects/`）と同梱スクリプトを調査した結果、**必要な処理はすべてネイティブ API に存在した**。WBPP（`BPP-LNReferenceSelector.js:606`、`BPP-Helper.js:1133`）が同じ用途で使っている定型パターンをそのまま採る。
+
+```js
+var median = view.computeOrFetchProperty( "Median" );
+var mad    = view.computeOrFetchProperty( "MAD" );
+var stf    = view.image.computeAutoStretch( median, mad.map( function ( m ) { return 1.4826 * m; } ),
+                                            -2.8, 0.25, false );
+var image = new Image( view.image );
+image.applyDisplayFunction( stf );
+var bmp = image.render();
+image.free();
+```
+
+| 自前実装（流用しない） | ネイティブ API |
+|---|---|
+| `computeAutoSTF()` | `Image.computeAutoStretch()` |
+| `midtonesTransferFunction()` の per-pixel 適用 | `Image.applyDisplayFunction()` |
+| `bmp.setPixel()` ループ | `Image.render()` |
+| `Math.floor(bx / scale)` の最近傍縮小 | `render(-n)` / `Bitmap.scaled()`（双線形） |
+
+`Image.render()` のシグネチャは `Bitmap render([int zoomLevel=1[, enableTransparency=true[, fast=false]]])`。**`zoomLevel` は PixInsight 共通のズーム規約で正が拡大・負が縮小**（`-2` が 1:2、`-3` が 1:3）。`-1` は内部予約値で使用不可。
+
+#### プレビューは原寸（1:1）でレンダリングする
+
+変換がネイティブになったことで、**`MAX_BITMAP_EDGE 2048` のような縮小上限を引き継ぐ理由が無くなった**。この上限は per-pixel ループが遅かったことへの対処だったと考えられる。
+
+原寸でレンダリングする利点は 3 つある。
+
+1. **淡い 1〜2 px の流星痕を縮小で壊さない。** 6024 → 2048 は 3 px に 1 つを拾う勘定で、最近傍なら軌跡が細切れになりうる。流星と衛星の判別はまさにこの細部を見る作業なので、判断材料を落としてはいけない
+2. **座標系が 1 段減る。** `bitmapScale = 1.0` となり、`検出座標 ×8 → bitmap 座標 → 画面座標` の 3 段で済む（縮小を挟むと 4 段になる）
+3. 全体表示は `fitToWindow`、細部は `ImagePreviewControl` のズームで見る。既存の操作系がそのまま使える
+
+コストは 6024×4024 の ARGB32 = 約 97 MB / 枚。1 枚 + LRU 数枚で 300 MB 程度に収まる見込み。
+
+**この方針は probe（`tests/pjsr/probe_preview.js`）の実測で確定させる。** 未確定なのは以下。
+
+- `render()` の実速度（原寸 6024×4024 で何 ms か）
+- `fast` 引数が縮小時の補間品質を切り替えるのか（既定 `false` が高品質と読めるが未確認）
+- 97 MB の Bitmap を数枚保持したときの実メモリ挙動
+- 上記が成立しない場合の退避策として、`Bitmap.save()` によるディスクキャッシュが実用速度かどうか
+
 #### 候補のオーバーレイ表示
 
 **1 フレームに複数の候補が写ることは常態である。** 実データでも流星と衛星が同一フレームに同居し、最大 3 件が同時に出た。したがってプレビューは「線を 1 本描く」では足りず、**どれがどれか識別できる表示**が要る。
