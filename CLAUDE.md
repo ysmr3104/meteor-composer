@@ -37,9 +37,10 @@ MeteorComposer は、一眼カメラで撮影した流星群の連番画像か�
 |---|---|---|
 | `javascript/detection_core.js` | 検出コア（純粋 JS） | 実装済み |
 | `javascript/mask_geometry.js` | 除外領域 Tier 1 / Tier 2（純粋 JS） | 実装済み |
-| `javascript/candidate_ops.js` | 共線マージ・横断照合・スコアリング | 未着手（Phase 2） |
+| `javascript/candidate_ops.js` | 共線マージ・横断照合 | 実装済み |
 | `javascript/MeteorComposer.js` | UI とパイプライン統合（PJSR） | 未着手 |
 | `tests/pjsr/probe_*.js` | PJSR API 実地調査 | 完了 |
+| `tests/pjsr/probe_preview.js` | プレビュー生成の実測 | 完了 |
 | `tests/pjsr/run_detection.js` | 実データでの検出実行 | 実装済み |
 | `tests/eval/evaluate.js` | 正解との突き合わせ | 実装済み |
 
@@ -88,6 +89,12 @@ PJSR スクリプトの出力は標準出力に出ません。ログとレポー
 
 - **用語は Composition。Integration は使わない**（requirements.md 7.3）
   `ImageIntegration` の意味論（シグマクリップ、重み付け、リジェクション）を期待させるため。
+
+- **プレビューは原寸（1:1）でレンダリングする**（requirements.md 7.1）
+  縮小は流星痕を実際に壊す。実測で 1:3 に縮小すると軌跡のピークコントラストが 1:1 の 19% まで落ちた。`manual-image-solver` の `MAX_BITMAP_EDGE 2048` は 6024 px に対して約 1:3 にあたるので、**この上限を引き継いではいけない**。`Image.render()` は原寸でも 17〜26 ms なので縮小する動機が無い。`createStretchedBitmap()` の per-pixel ループも流用しない（ネイティブ API で足りる。上位 `../CLAUDE.md` 参照）。
+
+- **検出座標から原寸への変換は単純な 8 倍ではない**（requirements.md 7.1）
+  `full = (n + 0.5) * s - 0.5`。単純に掛けると 8×8 ブロックの左上隅を指し最大 4 px ずれる。流星痕は 1〜2 px 幅なのでこれで完全に外す。オーバーレイ描画とヒットテストの両方で使う。
 
 ## 実装前に確認が必要な PJSR API
 
