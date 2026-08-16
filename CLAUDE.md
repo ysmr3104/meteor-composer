@@ -6,6 +6,25 @@
 
 ---
 
+## ⚠️ main への直接 push は行わないこと
+
+**このリポジトリの main は保護されていません**（private + GitHub Free プランでは branch protection / ruleset のいずれも適用不可）。
+
+**保護が無くても、保護されている場合と同じ手順を踏んでください。** git が拒否してくれないため、ここだけは自分で守る必要があります。
+
+```bash
+git checkout -b feature/<description>
+git add <files>
+git commit
+git push -u origin feature/<description>
+gh pr create --title "..." --body "..."
+gh pr merge --merge --delete-branch
+```
+
+リリース時に public 化して保護を設定します（[docs/requirements.md](docs/requirements.md) の未決事項を参照）。
+
+---
+
 ## プロジェクト概要
 
 MeteorComposer は、一眼カメラで撮影した流星群の連番画像から流星を自動検出し、人手によるスクリーニングを経て流星群コンポジット画像を生成する PixInsight スクリプトです。PJSR ネイティブで完結し、Python や外部プロセスに依存しません。
