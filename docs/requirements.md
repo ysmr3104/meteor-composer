@@ -65,6 +65,23 @@ registered を入力とする理由:
 
 registered ファイル名には元サブフレームのファイル名が保持されるため、「どの撮影サブに流星が写っているか」の追跡が可能。
 
+#### ディレクトリ構成（実測・要対応）
+
+WBPP は `registered/` の直下ではなく、**撮影パラメータごとのグループサブディレクトリ**に出力する。
+
+```
+registered/
+└── Light_BIN-1_6024x4024_EXPOSURE-13.00s_FILTER-NoFilter_RGB/
+    ├── <元ファイル名>_d_r.xisf     ← 対象
+    └── <元ファイル名>_d_r.xdrz     ← drizzle データ。対象外
+```
+
+- **`registered/*.xisf` の直下決め打ちでは 1 件も見つからない。** 再帰探索するか、グループを選択させる UI が必要
+- **`.xdrz`（drizzle データ）が同じディレクトリに同居する。** 拡張子でのフィルタが必須。ファイル数は xisf の 2 倍に見える
+- 露出やフィルタの異なる撮影が混在すると複数のグループができる。**複数グループを同時に扱うか、1 グループに限定するかは要決定**
+
+ファイル名の変換は `<元ファイル名>` + `_d_r`（debayer + register）。元の JPG やサブと突き合わせる場合は、拡張子を除いた stem の前方一致で一意に決まる。
+
 ### 3.2 撮影条件の推奨範囲（固定撮影）
 
 固定撮影では視野が 15°/時 で流れるため、StarAlignment が成立し、かつ実用的な重なり（70〜80%）を確保できる範囲に撮影時間を制限する必要がある。
@@ -444,12 +461,70 @@ Phase 1 は公開を伴うため、実装のほかに以下が作業範囲に含
   - 他のユーザーから実データのフィードバックを得られる利点が大きい
 - **スクリプトメニューの登録先**: `Image Analysis > MeteorComposer | ysmrastro > MeteorComposer`（8.3 参照）
 
-### 実装前に確認が必要な PJSR API
+### PJSR API 実地調査の結果（2026-08-16 実施・確認済み）
 
-以下は存在は確実だが、引数と戻り値の正確な形をドキュメントで確認する必要がある。
+PixInsight 1.9.4 (arm64) 上で `tests/pjsr/probe_*.js` を実行して確認した。以下はすべて実測。
 
-- `StarDetector` — 星検出。プロパティと `stars()` の戻り値の構造
-- `IntegerResample` / `Image.resample()` — ダウンサンプル時の補間モード指定（median の可否）
-- `Image.getLuminance()` — 輝度成分の抽出
-- `Image.MAD()` / `Image.median()` — ロバスト統計
-- `LinearFit` プロセスの PJSR からの呼び出し方法
+#### ピクセルの一括アクセス
+
+**`Image.getPixels()` / `setPixels()` / `toArray()` / `pixelValue()` は存在しない。** 代わりに `Image.toMatrix()` を使う。
+
+```
+Image → toMatrix() → Matrix → toArray() / toFloat32Array() / toFloat64Array()
+```
+
+`Matrix` は `.rows` / `.cols` / `.at(row, col)` を持ち、さらに `MAD` / `median` / `mean` / `stdDev` / `Sn` / `Qn` / `biweightMidvariance` などのロバスト統計を**ネイティブで**備える。`toImage()` で逆変換もできる。
+
+`Image.getSamples()` / `setSamples()` も存在するが引数が必要（未調査）。`Image.sample(x, y)` は単一画素用。
+
+#### 主要 API の可否
+
+| API | 可否 | 備考 |
+|---|---|---|
+| `Image.getLuminance(Image)` | ○ | 引数の `Image` に 1ch で書き込む |
+| `Image.resample(scale)` | ○ | 6024×4024 → 753×503 |
+| `Image.toMatrix()` | ○ | **一括アクセスの正解** |
+| `Image.binarize` / `median` / `MAD` / `mean` / `stdDev` | ○ | |
+| `Image.convolve` / `crop` / `fill` / `assign` / `normalize` | ○ | |
+| `IntegerResample.Average / Median / Maximum / Minimum` | ○ = 0 / 1 / 2 / 3 | **コンストラクタ側**にある。`prototype` 側には無い |
+| `StarDetector` | ○ | 下記 |
+| `LinearFit` / `PixelMath` / `MultiscaleLinearTransform` / `AutomaticBackgroundExtractor` / `Convolution` / `MorphologicalTransformation` | ○ | いずれも利用可能 |
+| `ColorSpace.RGB` = 1 / `ColorSpace.Gray` = 0 | ○ | 旧 `ColorSpace_RGB` は廃止済み |
+
+#### StarDetector
+
+`stars(image)` は次のフィールドを持つオブジェクトの配列を返す。
+
+```
+x, y        重心座標（float）
+pos         Point（.x / .y）
+rect        Rect（.x0 .y0 .x1 .y1 ほか多数）— 星の境界矩形
+srect       Rect — 構造の矩形（rect より一回り大きい）
+flux, bkg, size, signal, mad
+```
+
+主なパラメータ: `structureLayers`(5) / `sensitivity`(0.5) / `peakResponse`(0.5) / `maxDistortion`(0.6) / `hotPixelFilterRadius`(1) / `noiseReductionFilterRadius`(0) / `fitPSF`(false) / `psfElliptic`(false) / `minSNR`(0) / `upperLimit`(1)。
+
+`fitPSF = true` にすると `signal` と `mad` が有効値になり `size` が小数になるが、**PSF の長軸・短軸・角度は公開されない**。
+
+> **要検討**: 要件 4.2 の「星の実測伸長比を基準にする」は、StarDetector からは直接得られない。`rect` の縦横比は軸平行なので斜め方向の伸長を過小評価する。連結成分＋モーメントの機構は自前で持つので、それを星に適用するのが素直。
+
+#### 実測性能（654枚・6024×4024・外付け SSD）
+
+| 処理 | 時間 |
+|---|---|
+| `ImageWindow.open()` 1 枚 | **466 ms** |
+| `getLuminance()` | 23 ms |
+| `resample(1/8)` → 753×503 | 47 ms |
+| `toMatrix()` + `toArray()` | 約 3.3 ms |
+| `Matrix.at()` で 378,759 画素を走査 | 1 ms |
+| `Image.MAD()`（全解像度） | 112 ms |
+| `StarDetector.stars()`（全解像度） | **2228 ms**（21,123 個検出） |
+
+**1st pass は 1 枚あたり約 550 ms、654 枚で約 6 分**の見込み。I/O が支配的で、8.2 の想定どおり。
+
+`StarDetector` は 1 枚 2.2 秒かかるため全フレームには使えない。2nd pass 限定という 4.3 の設計は妥当。
+
+#### 実行環境の必須事項
+
+**`#engine v8` をファイルの 1 行目に置くこと。** 無い場合、1.9.4 は既定で旧 SpiderMonkey を選び、arm64 ビルドにそれは存在しないため実行されずに終わる。エラーは Process Console にしか出ない。詳細は `../CLAUDE.md`「実行時の落とし穴」。
