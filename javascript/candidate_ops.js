@@ -269,7 +269,21 @@ function maxOf(list, key) {
 var DEFAULT_MATCH_OPTIONS = {
    maxFrameGap: 2,          // frames may be skipped when a trail is faint
    maxAngleDiff: 15.0,      // satellites keep a nearly constant orientation
-   maxCentroidShift: 400.0  // in samples of the working field, per frame
+   maxCentroidShift: 400.0, // in samples of the working field, per frame
+
+   // Longest track that could still be a single meteor.
+   //
+   // A meteor lasts a fraction of a second, but exposures are contiguous: one
+   // that occurs at an exposure boundary is recorded partly at the end of one
+   // frame and partly at the start of the next. Two frames is therefore
+   // normal, not evidence of a satellite.
+   //
+   // Confirmed on the 2026-08-12 session: the labelled meteor in DSC05443 /
+   // DSC05444 forms a 2-frame track, while the satellites crossing the same
+   // frames form 11 and 14 frame tracks. Track lengths cluster at 1 (63
+   // tracks) and 2 (23 tracks), then thin out, so the boundary sits naturally
+   // at 2.
+   maxMeteorFrames: 2
 };
 
 // Link candidates that appear in consecutive frames.
@@ -333,9 +347,10 @@ function matchAcrossFrames(frames, options) {
          id: tracks[k].id,
          length: tracks[k].members.length,
          members: tracks[k].members,
-         // A meteor is expected to be a singleton. Anything persisting across
-         // several frames is almost certainly a satellite or an aircraft.
-         persistent: tracks[k].members.length > 1
+         // Anything lasting longer than a meteor plausibly can is almost
+         // certainly a satellite or an aircraft. See maxMeteorFrames for why
+         // the boundary is not 1.
+         persistent: tracks[k].members.length > opt.maxMeteorFrames
       });
    }
    return out;
