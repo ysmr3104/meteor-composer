@@ -212,6 +212,36 @@ suite("matchAcrossFrames: a meteor is a singleton track", function () {
    ok(tracks[0].persistent === false, "not marked persistent");
 });
 
+suite("matchAcrossFrames: a meteor spanning an exposure boundary is not persistent", function () {
+   // Exposures are contiguous, so a meteor occurring at a frame boundary is
+   // recorded partly at the end of one frame and partly at the start of the
+   // next. Two frames must therefore not be treated as evidence of a
+   // satellite. Observed on 2026-08-12 in DSC05443 / DSC05444.
+   var frames = [
+      frame(0, "f0.xisf", []),
+      frame(1, "f1.xisf", [segment(454, 86, 423, 96)]),
+      frame(2, "f2.xisf", [segment(439, 88, 427, 94)]),
+      frame(3, "f3.xisf", [])
+   ];
+   var tracks = ops.matchAcrossFrames(frames);
+   ok(tracks.length === 1, "one track (got " + tracks.length + ")");
+   ok(tracks[0].length === 2, "two members");
+   ok(tracks[0].persistent === false,
+      "a 2-frame track is NOT persistent, so the meteor survives filtering");
+});
+
+suite("matchAcrossFrames: maxMeteorFrames controls the boundary", function () {
+   var frames = [];
+   for (var i = 0; i < 3; ++i) {
+      frames.push(frame(i, "f" + i + ".xisf",
+                        [segment(i * 20, 100, i * 20 + 200, 100)]));
+   }
+   var lenient = ops.matchAcrossFrames(frames, { maxMeteorFrames: 3 });
+   var strict = ops.matchAcrossFrames(frames, { maxMeteorFrames: 2 });
+   ok(lenient[0].persistent === false, "3 frames allowed when maxMeteorFrames=3");
+   ok(strict[0].persistent === true, "3 frames rejected when maxMeteorFrames=2");
+});
+
 suite("matchAcrossFrames: a satellite forms a persistent track", function () {
    // Same orientation, centroid drifting steadily.
    var frames = [];
