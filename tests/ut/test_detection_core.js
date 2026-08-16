@@ -150,9 +150,12 @@ suite("computeBoundingBox: axis-aligned extent", function () {
 });
 
 suite("computeBoundingBox: a diagonal trail gets a much larger box", function () {
-   // This is why an oriented box is preferable for the overlay when candidates
-   // are crowded: the axis-aligned box of a diagonal trail covers far more
-   // area than the trail itself.
+   // The axis-aligned box of a diagonal trail covers far more area than the
+   // trail itself. This was the reason to consider an oriented box for the
+   // overlay, but measurement on real data showed no overlapping candidate
+   // pairs at all (0 of 162), so the axis-aligned box is adequate. The
+   // property is kept under test because it is the thing that would bite if
+   // candidate density ever rises.
    var pts = [];
    for (var i = 0; i < 100; ++i) {
       pts.push({ x: i, y: i, w: 1 });
