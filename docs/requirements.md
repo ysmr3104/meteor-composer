@@ -379,6 +379,10 @@ result   = master + residual × feathered_mask
 - [ ] Tier 3（WCS からの地平線算出）の実装可否と優先度
 - [ ] PixInsight のスクリプトメニュー上のカテゴリ（既存 2 本は Astrometry。本スクリプトは別カテゴリが妥当か）
 - [ ] リリース単位（Phase ごとにリリースするか、Stage 4 まで揃えてからか）
+- [ ] **リリース時にリポジトリを public 化し、main ブランチ保護を設定する**
+  - 現在 private。GitHub Free プランでは private リポジトリに branch protection / ruleset のいずれも適用できない（HTTP 403）ため保護は未設定
+  - 既存 4 リポジトリはすべて public で main 保護済み（PR 必須・承認 0 件・管理者にも強制・force push / 削除禁止）
+  - public 化した時点で同じ設定を適用すること
 
 ### 決定済み事項
 
