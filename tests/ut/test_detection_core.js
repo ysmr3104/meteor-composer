@@ -135,6 +135,53 @@ suite("computeEndpoints: horizontal bar", function () {
 });
 
 //----------------------------------------------------------------------------
+// Bounding box
+//
+// Needed by the screening UI to draw a numbered box per candidate and to
+// hit-test clicks.
+//----------------------------------------------------------------------------
+
+suite("computeBoundingBox: axis-aligned extent", function () {
+   var pts = syn.rectanglePoints(40, 3);
+   var b = core.computeBoundingBox(pts);
+   ok(b.left === 0 && b.top === 0, "origin corner");
+   ok(b.right === 39 && b.bottom === 2, "far corner");
+   ok(b.width === 40 && b.height === 3, "inclusive width and height");
+});
+
+suite("computeBoundingBox: a diagonal trail gets a much larger box", function () {
+   // This is why an oriented box is preferable for the overlay when candidates
+   // are crowded: the axis-aligned box of a diagonal trail covers far more
+   // area than the trail itself.
+   var pts = [];
+   for (var i = 0; i < 100; ++i) {
+      pts.push({ x: i, y: i, w: 1 });
+   }
+   var b = core.computeBoundingBox(pts);
+   ok(b.width === 100 && b.height === 100, "box is 100x100 for a 100-pixel diagonal");
+   ok(b.width * b.height === 10000, "box area is 100x the pixel count");
+});
+
+suite("computeBoundingBox: empty input returns null", function () {
+   ok(core.computeBoundingBox([]) === null, "no points, no box");
+});
+
+suite("detectCandidates: candidates carry a bounding box", function () {
+   var f = syn.makeField(300, 200, 0);
+   syn.addGaussianNoise(f, 0.002, 77);
+   syn.addLine(f, 30, 40, 260, 160, 2.0, 0.06);
+   var r = core.detectCandidates(f, { k: 5, minPixels: 20, minElongation: 6 });
+   ok(r.candidates.length >= 1, "a candidate was found");
+   if (r.candidates.length > 0) {
+      var b = r.candidates[0].bbox;
+      ok(b !== null && b !== undefined, "bbox is present");
+      ok(b.left >= 0 && b.top >= 0, "box is inside the frame");
+      ok(b.right < f.width && b.bottom < f.height, "box does not exceed the frame");
+      ok(b.width > 200, "box spans most of the trail's horizontal extent");
+   }
+});
+
+//----------------------------------------------------------------------------
 // Robust statistics
 //
 // For a symmetric distribution, sigma = 1.4826 * MAD. The expectations below
