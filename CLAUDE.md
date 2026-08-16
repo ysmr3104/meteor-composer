@@ -99,7 +99,21 @@ PJSR スクリプトの出力は標準出力に出ません。ログとレポー
 - `Image.MAD()` / `Image.median()` — ロバスト統計
 - `LinearFit` プロセスの PJSR からの呼び出し方法
 
-V8 移行ガイドや CodeSign の公式ドキュメントの保存版が `../pixinsight-next-javascript/` にあります（mbp4yossy のみ）。
+V8 移行ガイドや CodeSign の公式ドキュメントの保存版が `../pixinsight-next-javascript/` にあります。
+
+## 実データでの評価を実行する前に
+
+**必ずコミットとプッシュを済ませること。** 検出性能の評価はベースライン比較であり、結果がどのコミットのものか追えなくなると評価そのものが意味を失います（`split-image-solver/CLAUDE.md` と同じ規約）。
+
+評価用データ（外付け SSD）が繋がっているのは 1 台だけなので、実データを読む処理はそちらで動かします。`tools/run-remote.sh` が未コミット・未プッシュを検出して実行を拒否します。
+
+```bash
+tools/run-remote.sh --pjsr tests/pjsr/run_detection.js   # 実データで検出
+tools/run-remote.sh node tests/eval/evaluate.js          # 評価
+tools/run-remote.sh --fetch tests/eval/baseline.json     # 成果物を持ち帰る
+```
+
+**Node.js の Small テストはデータも PixInsight も不要なので手元で動きます。** リモートで動かす必要があるのは実データを読む処理だけです。
 
 ## 配布時の注意
 
