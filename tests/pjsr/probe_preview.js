@@ -369,11 +369,17 @@ function locateTrail() {
    }
 
    // Detection coordinates are in the 1/8 field; scale back to full resolution.
+   //
+   // Sample n of the reduced field covers full-resolution samples [n*s, (n+1)*s),
+   // so its centre is at (n + 0.5)*s - 0.5, not n*s. Plain multiplication points
+   // at the corner of the block and misses by up to s/2 - here 4 px, which is
+   // wider than the 1-2 px trail being measured. The screening UI's overlay
+   // needs this same conversion.
    var sx = g.fullWidth / field.width;
    var sy = g.fullHeight / field.height;
    g.trail = {
-      x0: best.x0 * sx, y0: best.y0 * sy,
-      x1: best.x1 * sx, y1: best.y1 * sy
+      x0: (best.x0 + 0.5) * sx - 0.5, y0: (best.y0 + 0.5) * sy - 0.5,
+      x1: (best.x1 + 0.5) * sx - 0.5, y1: (best.y1 + 0.5) * sy - 0.5
    };
    log("  chosen trail (full-res px): (" + g.trail.x0.toFixed(0) + "," + g.trail.y0.toFixed(0)
        + ") - (" + g.trail.x1.toFixed(0) + "," + g.trail.y1.toFixed(0) + ")"
@@ -480,7 +486,9 @@ function probeDiskCache() {
          probe("save " + c.name + " (render(" + c.z + "), quality=" + c.quality + ")", function () {
             var bmp = g.stretched.render(c.z);
             bmp.save(path, c.quality);
-            var bytes = File.exists(path) ? File.size(path) : -1;
+            // File.size is an instance property, not a static method; the
+            // static way to size a path is FileInfo.
+            var bytes = File.exists(path) ? (new FileInfo(path)).size : -1;
             return bmp.width + "x" + bmp.height
                  + "  " + (bytes / 1048576).toFixed(1) + " MB";
          });
