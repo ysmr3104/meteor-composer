@@ -1,0 +1,203 @@
+//============================================================================
+// evaluate.js - Score a detection run against the ground truth
+//
+// Run: node tests/eval/evaluate.js [results.json] [ground_truth.json]
+//
+// This is EVALUATION, not a test (docs/tests.md section 5). It reports metrics
+// and compares them with a baseline; it does not assert correctness of the
+// code. Detection thresholds cannot be verified by unit tests.
+//
+// Scoring rules, from docs/tests.md 5-3-1:
+//   - Recall over the labelled meteors is the hard gate.
+//   - Detections on unlabelled frames are NOT false positives. The labels come
+//     from visual inspection and are known to have misses, so those are
+//     reported as "needs review" only.
+//============================================================================
+
+var fs = require("fs");
+var path = require("path");
+
+var DEFAULT_RESULTS = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/detection_results.json";
+var DEFAULT_GT = path.join(__dirname, "ground_truth.json");
+var BASELINE_PATH = path.join(__dirname, "baseline.json");
+
+// Flags must not be mistaken for positional paths.
+function positionalArgs() {
+   return process.argv.slice(2).filter(function (a) { return a.indexOf("-") !== 0; });
+}
+
+function main() {
+   var positional = positionalArgs();
+   var resultsPath = positional[0] || DEFAULT_RESULTS;
+   var gtPath = positional[1] || DEFAULT_GT;
+
+   if (!fs.existsSync(resultsPath)) {
+      console.error("results not found: " + resultsPath);
+      process.exit(2);
+   }
+   var results = JSON.parse(fs.readFileSync(resultsPath, "utf8"));
+   var gt = JSON.parse(fs.readFileSync(gtPath, "utf8"));
+
+   var labelled = {};
+   gt.meteors.forEach(function (m) { labelled[m.file] = m; });
+   var uncertain = {};
+   (gt.uncertain || []).forEach(function (m) { uncertain[m.file] = m; });
+
+   var detected = [];
+   var missed = [];
+   var needsReview = [];
+   var errors = [];
+   var candidateTotal = 0;
+   var framesProcessed = 0;
+
+   results.frames.forEach(function (f) {
+      if (f.error) {
+         errors.push(f);
+         return;
+      }
+      ++framesProcessed;
+      var n = f.candidates ? f.candidates.length : 0;
+      candidateTotal += n;
+
+      if (labelled[f.file]) {
+         if (n > 0) {
+            detected.push({ file: f.file, candidates: f.candidates });
+         } else {
+            missed.push({ file: f.file, sigma: f.sigma, componentCount: f.componentCount });
+         }
+      } else if (n > 0 && !uncertain[f.file]) {
+         needsReview.push({ file: f.file, candidates: f.candidates });
+      }
+   });
+
+   var recall = gt.meteors.length > 0 ? detected.length / gt.meteors.length : 0;
+
+   console.log("=========================================================");
+   console.log(" MeteorComposer detection evaluation");
+   console.log("=========================================================");
+   console.log("session:          " + gt.session);
+   console.log("results:          " + resultsPath);
+   console.log("generated:        " + results.generated);
+   console.log("options:          " + JSON.stringify(results.options));
+   console.log("");
+   console.log("frames processed: " + framesProcessed
+               + (errors.length ? ("  (errors: " + errors.length + ")") : ""));
+   console.log("elapsed:          " + (results.elapsedMs / 1000).toFixed(1) + " s"
+               + "  (" + (results.elapsedMs / Math.max(1, framesProcessed)).toFixed(0) + " ms/frame)");
+   console.log("");
+   console.log("--- HARD GATE ---------------------------------------");
+   console.log("recall:           " + detected.length + " / " + gt.meteors.length
+               + "  (" + (recall * 100).toFixed(1) + "%)");
+   if (missed.length > 0) {
+      console.log("MISSED:");
+      missed.forEach(function (m) {
+         console.log("  - " + m.file + "   sigma=" + fmt(m.sigma)
+                     + " components=" + m.componentCount);
+      });
+   }
+   console.log("");
+   console.log("--- REPORT ONLY -------------------------------------");
+   console.log("total candidates: " + candidateTotal);
+   console.log("needs review:     " + needsReview.length + " frames"
+               + "   (NOT false positives: the labels are known to have misses)");
+
+   if (detected.length > 0) {
+      console.log("");
+      console.log("--- Detected meteors --------------------------------");
+      detected.forEach(function (d) {
+         var best = d.candidates.slice().sort(function (a, b) { return b.length - a.length; })[0];
+         console.log("  " + d.file);
+         console.log("      n=" + d.candidates.length
+                     + " len=" + fmt(best.length)
+                     + " angle=" + fmt(best.angle)
+                     + " elong=" + fmt(best.elongation)
+                     + " px=" + best.pixelCount);
+      });
+   }
+
+   if (needsReview.length > 0) {
+      console.log("");
+      console.log("--- Needs review (top 20 by trail length) -----------");
+      var flat = [];
+      needsReview.forEach(function (r) {
+         r.candidates.forEach(function (c) {
+            flat.push({ file: r.file, c: c });
+         });
+      });
+      flat.sort(function (a, b) { return b.c.length - a.c.length; });
+      flat.slice(0, 20).forEach(function (item) {
+         console.log("  " + item.file
+                     + "  len=" + fmt(item.c.length)
+                     + " angle=" + fmt(item.c.angle)
+                     + " elong=" + fmt(item.c.elongation)
+                     + " px=" + item.c.pixelCount);
+      });
+   }
+
+   var summary = {
+      generated: results.generated,
+      options: results.options,
+      framesProcessed: framesProcessed,
+      labelledMeteors: gt.meteors.length,
+      detected: detected.length,
+      recall: recall,
+      totalCandidates: candidateTotal,
+      needsReviewFrames: needsReview.length,
+      msPerFrame: results.elapsedMs / Math.max(1, framesProcessed)
+   };
+
+   compareBaseline(summary);
+}
+
+function compareBaseline(summary) {
+   console.log("");
+   console.log("--- Baseline ----------------------------------------");
+   if (!fs.existsSync(BASELINE_PATH)) {
+      console.log("no baseline yet. To record this run as the baseline:");
+      console.log("  node tests/eval/evaluate.js --save-baseline");
+      if (process.argv.indexOf("--save-baseline") >= 0) {
+         fs.writeFileSync(BASELINE_PATH, JSON.stringify(summary, null, 2) + "\n");
+         console.log("baseline written: " + BASELINE_PATH);
+      }
+      return;
+   }
+   var base = JSON.parse(fs.readFileSync(BASELINE_PATH, "utf8"));
+   console.log("baseline recall:  " + base.detected + " / " + base.labelledMeteors);
+   console.log("current recall:   " + summary.detected + " / " + summary.labelledMeteors);
+
+   if (summary.detected < base.detected) {
+      console.log("");
+      console.log("*** REGRESSION: recall dropped from " + base.detected
+                  + " to " + summary.detected + ". This is an immediate NG.");
+      console.log("    A tolerance band does not make this acceptable.");
+      process.exit(1);
+   }
+   if (summary.detected > base.detected) {
+      console.log("");
+      console.log("IMPROVED: recall rose from " + base.detected + " to " + summary.detected + ".");
+      console.log("Update the baseline once the new detections are confirmed:");
+      console.log("  node tests/eval/evaluate.js --save-baseline");
+      if (process.argv.indexOf("--save-baseline") >= 0) {
+         fs.writeFileSync(BASELINE_PATH, JSON.stringify(summary, null, 2) + "\n");
+         console.log("baseline updated.");
+      }
+      return;
+   }
+   console.log("recall unchanged.");
+   if (process.argv.indexOf("--save-baseline") >= 0) {
+      fs.writeFileSync(BASELINE_PATH, JSON.stringify(summary, null, 2) + "\n");
+      console.log("baseline updated.");
+   }
+}
+
+function fmt(v) {
+   if (v === undefined || v === null) {
+      return "?";
+   }
+   if (!isFinite(v)) {
+      return "inf";
+   }
+   return (typeof v === "number") ? v.toFixed(1) : ("" + v);
+}
+
+main();
