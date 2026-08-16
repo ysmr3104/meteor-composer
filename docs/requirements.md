@@ -356,7 +356,7 @@ result   = master + residual × feathered_mask
 - **PixInsight 1.9.4 以降（V8 専用）**。SpiderMonkey（1.9.3 以前）には対応しない
 - 外部依存なし（Python 不要、サードパーティ製プロセス不要）
 - `pixinsight-scripts` リポジトリの updates.xri 経由で配信。`<platform version="1.9.4:9.9.9">` の 1 パッケージのみ
-- CPD 登録完了後にスクリプトへ署名
+- CodeSign でスクリプトへ署名（開発者 ID `ysmr3104` は CPD 登録済み・署名運用中）
 
 ### 8.3 スクリプトメニューへの登録
 
@@ -407,7 +407,7 @@ PixInsight 純正スクリプト（`AnnotateImage : Astrometry > ... | Render > 
 
 Phase 1 は公開を伴うため、実装のほかに以下が作業範囲に含まれる。
 
-- スクリプトへの署名（CPD 登録の反映が前提）
+- スクリプトへの署名（CodeSign。開発者 ID は登録済みなので追加の手続きは不要）
 - `build-release.sh` 相当のビルドスクリプト作成
 - `pixinsight-scripts/integrate.sh` の `SOURCES` への追記
 - ユーザー向けドキュメント（README の使い方、パラメータの説明）
