@@ -317,6 +317,41 @@ function computeMoments(points, applySheppard) {
    };
 }
 
+// Axis-aligned bounding box of a component.
+//
+// Needed by the UI for click hit-testing and for the optional axis-aligned
+// overlay. Note that for a diagonal trail this box is much larger than the
+// trail itself, which is why the endpoints below are reported separately and
+// why an oriented box (centre + angle + majorLength/minorLength) is the better
+// overlay shape when candidates are crowded.
+function computeBoundingBox(points) {
+   if (points.length === 0) {
+      return null;
+   }
+   var left = points[0].x, right = points[0].x;
+   var top = points[0].y, bottom = points[0].y;
+   for (var i = 1; i < points.length; ++i) {
+      var p = points[i];
+      if (p.x < left) {
+         left = p.x;
+      }
+      if (p.x > right) {
+         right = p.x;
+      }
+      if (p.y < top) {
+         top = p.y;
+      }
+      if (p.y > bottom) {
+         bottom = p.y;
+      }
+   }
+   return {
+      left: left, top: top, right: right, bottom: bottom,
+      width: right - left + 1,
+      height: bottom - top + 1
+   };
+}
+
 // Endpoints of a component, taken as the extreme projections onto the major
 // axis. More useful than a bounding box: a diagonal trail's bounding box
 // corners are not on the trail.
@@ -404,7 +439,10 @@ function detectCandidates(field, options, mask) {
          elongation: m.elongation,
          pixelCount: pixels.length,
          majorLength: m.majorLength,
-         minorLength: m.minorLength
+         minorLength: m.minorLength,
+         // For the UI overlay: axis-aligned box for hit-testing, and the
+         // oriented box is (cx, cy, angle, majorLength, minorLength).
+         bbox: computeBoundingBox(pixels)
       });
    }
    return {
@@ -430,6 +468,7 @@ if (typeof module !== "undefined") {
       connectedComponents: connectedComponents,
       computeMoments: computeMoments,
       computeEndpoints: computeEndpoints,
+      computeBoundingBox: computeBoundingBox,
       detectCandidates: detectCandidates,
       DEFAULT_OPTIONS: DEFAULT_OPTIONS
    };
