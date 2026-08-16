@@ -71,7 +71,15 @@ V8 移行ガイドや CodeSign の公式ドキュメントの保存版が `../pi
 
 新しいスクリプトなので、配信するには `pixinsight-scripts/integrate.sh` の `SOURCES` 配列への追記が必要です。
 
-既存 2 本は SpiderMonkey 版（PixInsight 1.9.3 以前）と V8 版（1.9.4 以降）の 2 パッケージを配信していますが、本スクリプトで両対応するかは未決定です。二重ビルドの保守コストと引き換えになります。
+**V8 専用（PixInsight 1.9.4 以降）です。** SpiderMonkey には対応しません。既存 2 本が両対応なのは SpiderMonkey で書いたものを移植した経緯によるもので、本スクリプトには当てはまりません。配信する `<platform>` は `1.9.4:9.9.9` の 1 つだけです。
+
+メニュー登録は機能カテゴリとベンダーカテゴリの両方に出します。`#feature-id` は 1 つのディレクティブ内で `|` 区切りで複数のメニュー位置を指定できます。
+
+```
+#feature-id  MeteorComposer : Image Analysis > MeteorComposer | ysmrastro > MeteorComposer
+```
+
+**本スクリプトの公開時に、既存 2 本も `ysmrastro` カテゴリへ同時掲載するよう変更します。** 詳細と手順は [docs/requirements.md](docs/requirements.md) の 8.3 を参照してください。
 
 ## テスト方針
 
