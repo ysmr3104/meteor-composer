@@ -1,0 +1,18 @@
+{
+  "generated": "2026-08-16T15:50:54.179Z",
+  "options": {
+    "backgroundFactor": 8,
+    "k": 5,
+    "connectivity": 8,
+    "minPixels": 12,
+    "minElongation": 6,
+    "minLength": 10
+  },
+  "framesProcessed": 654,
+  "labelledMeteors": 9,
+  "detected": 9,
+  "recall": 1,
+  "totalCandidates": 411,
+  "needsReviewFrames": 282,
+  "msPerFrame": 757.2889908256881
+}

@@ -1,0 +1,82 @@
+{
+  "session": "2026-08-12-perseids",
+  "registered_group": "Light_BIN-1_6024x4024_EXPOSURE-13.00s_FILTER-NoFilter_RGB",
+  "frame_count": 654,
+  "note": "answer は目視ラベル。誤検出は無いが見落としの可能性あり。answer に無い検出は偽陽性ではなく「要確認」として扱う（docs/tests.md 5-3-1）。",
+  "meteors": [
+    {
+      "file": "pct-2026-08-12_011807_ILCE-7M3_DSC05001_d_r.xisf",
+      "source": "pct-2026-08-12_011807_ILCE-7M3_DSC05001.JPG",
+      "x0": null,
+      "y0": null,
+      "x1": null,
+      "y1": null
+    },
+    {
+      "file": "pct-2026-08-12_012055_ILCE-7M3_DSC05014_d_r.xisf",
+      "source": "pct-2026-08-12_012055_ILCE-7M3_DSC05014.JPG",
+      "x0": null,
+      "y0": null,
+      "x1": null,
+      "y1": null
+    },
+    {
+      "file": "pct-2026-08-12_012448_ILCE-7M3_DSC05032_d_r.xisf",
+      "source": "pct-2026-08-12_012448_ILCE-7M3_DSC05032.JPG",
+      "x0": null,
+      "y0": null,
+      "x1": null,
+      "y1": null
+    },
+    {
+      "file": "pct-2026-08-12_022618_ILCE-7M3_DSC05317_d_r.xisf",
+      "source": "pct-2026-08-12_022618_ILCE-7M3_DSC05317.JPG",
+      "x0": null,
+      "y0": null,
+      "x1": null,
+      "y1": null
+    },
+    {
+      "file": "pct-2026-08-12_023351_ILCE-7M3_DSC05352_d_r.xisf",
+      "source": "pct-2026-08-12_023351_ILCE-7M3_DSC05352.JPG",
+      "x0": null,
+      "y0": null,
+      "x1": null,
+      "y1": null
+    },
+    {
+      "file": "pct-2026-08-12_024609_ILCE-7M3_DSC05409_d_r.xisf",
+      "source": "pct-2026-08-12_024609_ILCE-7M3_DSC05409.JPG",
+      "x0": null,
+      "y0": null,
+      "x1": null,
+      "y1": null
+    },
+    {
+      "file": "pct-2026-08-12_024949_ILCE-7M3_DSC05426_d_r.xisf",
+      "source": "pct-2026-08-12_024949_ILCE-7M3_DSC05426.JPG",
+      "x0": null,
+      "y0": null,
+      "x1": null,
+      "y1": null
+    },
+    {
+      "file": "pct-2026-08-12_025329_ILCE-7M3_DSC05443_d_r.xisf",
+      "source": "pct-2026-08-12_025329_ILCE-7M3_DSC05443.JPG",
+      "x0": null,
+      "y0": null,
+      "x1": null,
+      "y1": null
+    },
+    {
+      "file": "pct-2026-08-12_025342_ILCE-7M3_DSC05444_d_r.xisf",
+      "source": "pct-2026-08-12_025342_ILCE-7M3_DSC05444.JPG",
+      "x0": null,
+      "y0": null,
+      "x1": null,
+      "y1": null
+    }
+  ],
+  "known_false_positives": [],
+  "uncertain": []
+}

@@ -29,9 +29,43 @@ gh pr merge --merge --delete-branch
 
 MeteorComposer は、一眼カメラで撮影した流星群の連番画像から流星を自動検出し、人手によるスクリーニングを経て流星群コンポジット画像を生成する PixInsight スクリプトです。PJSR ネイティブで完結し、Python や外部プロセスに依存しません。
 
-**現在は要件整理段階で、実装コードはまだありません。**
-
 機能要件の全体像は [docs/requirements.md](docs/requirements.md) にあります。設計判断の根拠（なぜ参照差分を使わないか、なぜ比較明合成では駄目か等）も同ドキュメントに記録しているので、方針を変えようとする前に必ず目を通してください。
+
+### 現在の実装状況（Phase 1 進行中）
+
+| ファイル | 内容 | 状態 |
+|---|---|---|
+| `javascript/detection_core.js` | 検出コア（純粋 JS） | 実装済み |
+| `javascript/mask_geometry.js` | 除外領域 Tier 1 / Tier 2（純粋 JS） | 実装済み |
+| `javascript/candidate_ops.js` | 共線マージ・横断照合・スコアリング | 未着手（Phase 2） |
+| `javascript/MeteorComposer.js` | UI とパイプライン統合（PJSR） | 未着手 |
+| `tests/pjsr/probe_*.js` | PJSR API 実地調査 | 完了 |
+| `tests/pjsr/run_detection.js` | 実データでの検出実行 | 実装済み |
+| `tests/eval/evaluate.js` | 正解との突き合わせ | 実装済み |
+
+## コマンド
+
+```bash
+# Small テスト（Node.js。外部依存なし、秒オーダー）
+node tests/ut/test_detection_core.js
+node tests/ut/test_mask_geometry.js
+
+# PJSR API 調査（PixInsight 必要）
+/Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
+  -n --automation-mode --no-splash \
+  -r="$(pwd)/tests/pjsr/probe_pjsr_api.js" --force-exit
+
+# 実データでの検出実行（PixInsight + 評価用データ必要。654枚で約8分）
+/Applications/PixInsight/PixInsight.app/Contents/MacOS/PixInsight \
+  -n --automation-mode --no-splash \
+  -r="$(pwd)/tests/pjsr/run_detection.js" --force-exit
+
+# 検出性能の評価（テストではない。docs/tests.md 5 章）
+node tests/eval/evaluate.js
+node tests/eval/evaluate.js --save-baseline   # ベースライン更新
+```
+
+PJSR スクリプトの出力は標準出力に出ません。ログとレポートは評価用データのディレクトリに書かれます。
 
 ## 設計上の重要な決定
 
