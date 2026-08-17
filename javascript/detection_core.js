@@ -391,7 +391,7 @@ var DEFAULT_OPTIONS = {
    minLength: 10.0        // in samples of the working (downsampled) field
 };
 
-function mergeOptions(options) {
+function mergeDetectionOptions(options) {
    var out = {};
    for (var k in DEFAULT_OPTIONS) {
       out[k] = DEFAULT_OPTIONS[k];
@@ -411,7 +411,7 @@ function mergeOptions(options) {
 // mask, if given, is a Uint8Array of the same length as field.data where 0
 // marks samples to exclude. It is applied before the statistics are computed.
 function detectCandidates(field, options, mask) {
-   var opt = mergeOptions(options);
+   var opt = mergeDetectionOptions(options);
    var flat = removeBackground(field, opt.backgroundFactor);
    var th = threshold(flat, opt.k, mask);
    var cc = connectedComponents(th.binary, field.width, field.height, opt.connectivity);
