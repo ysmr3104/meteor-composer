@@ -1172,6 +1172,34 @@ var MeteorComposerDialog = class extends Dialog {
       var startIndex = this.sortKeys.indexOf(this.sortKey);
       this.sortCombo.currentItem = startIndex >= 0 ? startIndex : 0;
 
+      // Reviewing your own calls. Available in both modes: this narrows by
+      // what the operator decided, not by what the classifier decided, so it
+      // is not the kind of filtering docs/tests.md 5-2 rules out.
+      this.showLabel = new Label(this);
+      this.showLabel.text = "Show:";
+      this.showLabel.textAlignment = TextAlignment.Right | TextAlignment.VerticalCenter;
+
+      this.showCombo = new ComboBox(this);
+      this.showCombo.addItem("All");
+      this.showCombo.addItem("Unreviewed");
+      this.showCombo.addItem("Reviewed");
+      this.showCombo.addItem("Meteor");
+      this.showCombo.addItem("Not a meteor");
+      this.showCombo.addItem("Uncertain");
+      this.showFilters = [
+         null,
+         [VERDICT.UNREVIEWED],
+         [VERDICT.METEOR, VERDICT.NOT_METEOR, VERDICT.UNCERTAIN],
+         [VERDICT.METEOR],
+         [VERDICT.NOT_METEOR],
+         [VERDICT.UNCERTAIN]
+      ];
+      this.showFilter = null;
+      this.showCombo.onItemSelected = function (index) {
+         self.showFilter = self.showFilters[index];
+         self.refreshList();
+      };
+
       this.hidePersistentCheck = new CheckBox(this);
       this.hidePersistentCheck.text = "Hide persistent tracks";
       this.hidePersistentCheck.toolTip =
@@ -1183,7 +1211,7 @@ var MeteorComposerDialog = class extends Dialog {
       // docs/tests.md 5-2: in ground-truth mode every candidate is shown.
       // The control is not merely ignored, it is disabled, so the state of
       // the UI matches what the model will do.
-      if (!modeAllowsFiltering(this.mode)) {
+      if (!modeAllowsClassifierFiltering(this.mode)) {
          this.hidePersistentCheck.enabled = false;
          this.hidePersistentCheck.toolTip =
             "<p>Filtering is disabled in ground-truth mode: building the "
@@ -1197,14 +1225,21 @@ var MeteorComposerDialog = class extends Dialog {
 
       var controls = new HorizontalSizer;
       controls.spacing = 6;
+      controls.add(this.showLabel);
+      controls.add(this.showCombo);
+      controls.addSpacing(8);
       controls.add(this.sortLabel);
       controls.add(this.sortCombo);
-      controls.add(this.hidePersistentCheck);
-      controls.addStretch();
+
+      var controls2 = new HorizontalSizer;
+      controls2.spacing = 6;
+      controls2.add(this.hidePersistentCheck);
+      controls2.addStretch();
 
       this.listSizer = new VerticalSizer;
       this.listSizer.spacing = 4;
       this.listSizer.add(controls);
+      this.listSizer.add(controls2);
       this.listSizer.add(this.candidateTree, 100);
    }
 
@@ -1634,7 +1669,10 @@ var MeteorComposerDialog = class extends Dialog {
       if (this.session === null) {
          return;
       }
-      var filter = { hidePersistent: this.hidePersistentCheck.checked };
+      var filter = {
+         hidePersistent: this.hidePersistentCheck.checked,
+         verdicts: this.showFilter
+      };
       var rows = filterRows(this.session, filter);
       this.displayed = sortRows(this.session, rows, this.sortKey, this.sortAscending);
 
