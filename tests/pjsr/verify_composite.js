@@ -142,7 +142,19 @@ function main() {
       var brightestValue = -1;
       var brightestIndex = -1;
 
+      // Per channel, not just totalled.
+      //
+      // The first version of this check summed the added light across all
+      // three channels. That passed on a composite where R had received
+      // everything and G and B exactly nothing: R's contribution alone made
+      // the total positive. A check that aggregates the very axis a bug lives
+      // on cannot see the bug.
+      var addedPerChannel = [];
+      var peakPerChannel = [];
+
       for (var ch = 0; ch < master.numberOfChannels; ++ch) {
+         addedPerChannel.push(0);
+         peakPerChannel.push(0);
          var m = channelToArray(master, ch);
          var c = channelToArray(comp, ch);
 
@@ -164,6 +176,10 @@ function main() {
                   ++insideCount;
                }
                addedTotal += diff;
+               addedPerChannel[ch] += diff;
+               if (diff > peakPerChannel[ch]) {
+                  peakPerChannel[ch] = diff;
+               }
                if (diff > maxInside) {
                   maxInside = diff;
                }
@@ -206,6 +222,27 @@ function main() {
          log("  PASS - the net effect inside the mask is added light.");
       } else {
          log("  FAIL - the mask region did not gain light overall.");
+      }
+
+      log("");
+      log("  Per channel, which is what a totalled check cannot show:");
+      var names = ["R", "G", "B"];
+      var emptyChannels = 0;
+      for (var pc = 0; pc < addedPerChannel.length; ++pc) {
+         var label = pc < names.length ? names[pc] : ("ch" + pc);
+         var mean = addedPerChannel[pc] / insideCount;
+         log("    " + label + "  mean added " + mean.toExponential(3)
+             + "   peak added " + peakPerChannel[pc].toFixed(6));
+         if (peakPerChannel[pc] <= 0) {
+            ++emptyChannels;
+         }
+      }
+      if (emptyChannels === 0) {
+         log("  PASS - every channel received light.");
+      } else {
+         log("  FAIL - " + emptyChannels + " channel(s) received nothing at all.");
+         log("  A channel that gained exactly zero is a write-back that did");
+         log("  not happen, not a faint meteor.");
       }
 
       section("3. Where is the brightest addition?");
