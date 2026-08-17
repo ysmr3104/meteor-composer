@@ -31,7 +31,7 @@
 var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test";
 var GROUP = "Light_BIN-1_6024x4024_EXPOSURE-13.00s_FILTER-NoFilter_RGB";
 var REGISTERED_DIR = DATA_ROOT + "/registered/" + GROUP;
-var MASTER_PATH = DATA_ROOT + "/master/masterLight_" + GROUP + ".xisf";
+var MASTER_DIR = DATA_ROOT + "/master";
 var RESULTS_PATH = DATA_ROOT + "/detection_results.json";
 var SESSION_PATH = DATA_ROOT + "/meteor_session.json";
 var OUTPUT_PATH = DATA_ROOT + "/meteor_composite.xisf";
@@ -84,6 +84,15 @@ function section(title) {
 // Centre of detection sample n in full-resolution pixels. Multiplying by the
 // scale alone points at the corner of the block and misses a thin trail by up
 // to half a block; see preview_geometry.js.
+// External volumes formatted as exFAT carry macOS AppleDouble sidecars named
+// "._<name>". They are not images.
+function isRealXisf(name) {
+   return name.length > 5
+       && name.indexOf("._") !== 0
+       && name.indexOf(".") !== 0
+       && name.toLowerCase().lastIndexOf(".xisf") === name.length - 5;
+}
+
 function sampleCentreToImage(n, scale) {
    return (n + 0.5) * scale - 0.5;
 }
@@ -177,11 +186,38 @@ function main() {
 
    section("2. Master light");
 
-   if (!File.exists(MASTER_PATH)) {
-      log("[FAIL] master not found: " + MASTER_PATH);
+   // Found rather than constructed. The master's name is close to the
+   // group's but not derived from it - the group is "Light_BIN-1_..." while
+   // the master is "masterLight_BIN-1_..." - and building the string from the
+   // group produced a path that simply did not exist. Listing the directory
+   // cannot get that wrong.
+   //
+   // The uncropped master is preferred: an autocropped one has different
+   // dimensions from the subs, which would put every mask in the wrong place.
+   var masterPath = null;
+   var autocropPath = null;
+   var find = new FileFind;
+   if (find.begin(MASTER_DIR + "/*")) {
+      do {
+         if (find.isDirectory || !isRealXisf(find.name)) {
+            continue;
+         }
+         if (find.name.indexOf("autocrop") >= 0) {
+            autocropPath = MASTER_DIR + "/" + find.name;
+         } else if (masterPath === null) {
+            masterPath = MASTER_DIR + "/" + find.name;
+         }
+      } while (find.next());
+   }
+   if (masterPath === null) {
+      masterPath = autocropPath;
+   }
+   if (masterPath === null) {
+      log("[FAIL] no master found in " + MASTER_DIR);
       return;
    }
-   var masterWindow = ImageWindow.open(MASTER_PATH)[0];
+   log("  using: " + masterPath);
+   var masterWindow = ImageWindow.open(masterPath)[0];
    var masterImage = masterWindow.mainView.image;
    var W = masterImage.width;
    var H = masterImage.height;
