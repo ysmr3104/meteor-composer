@@ -43,6 +43,41 @@ function main() {
    var uncertain = {};
    (gt.uncertain || []).forEach(function (m) { uncertain[m.file] = m; });
 
+   // Labels come from two places and they do not mean the same thing.
+   //
+   //   visual    - found by eye in the JPGs, without seeing the detector's
+   //               output. Independent of the detector, so recall over these
+   //               measures detection ability. This is the hard gate.
+   //   screening - found by working through the detector's own candidate list
+   //               in the UI. Recall over these is 100% by construction: every
+   //               one of them was, by definition, detected. Useful as a
+   //               regression net - losing one is a real regression - but it
+   //               measures nothing about detection ability.
+   //
+   // Reporting a single combined recall would quietly turn the gate into a
+   // tautology, which is exactly the failure docs/tests.md 5-2 warns about.
+   var visualFiles = {};
+   var screeningFiles = {};
+   gt.meteors.forEach(function (m) {
+      // Labels written before provenance was recorded are visual: the
+      // screening UI did not exist yet.
+      if (m.labelled_by === "screening") {
+         screeningFiles[m.file] = m;
+      } else {
+         visualFiles[m.file] = m;
+      }
+   });
+
+   // Candidates the screening pass judged not-a-meteor, keyed per candidate.
+   // Entries written before the UI recorded indexInFrame have no index; those
+   // are ignored here rather than being taken to cover a whole frame.
+   var judgedNegative = {};
+   (gt.known_false_positives || []).forEach(function (m) {
+      if (m.indexInFrame !== undefined) {
+         judgedNegative[m.file + ":" + m.indexInFrame] = true;
+      }
+   });
+
    var detected = [];
    var missed = [];
    var needsReview = [];
@@ -65,12 +100,53 @@ function main() {
          } else {
             missed.push({ file: f.file, sigma: f.sigma, componentCount: f.componentCount });
          }
-      } else if (n > 0 && !uncertain[f.file]) {
-         needsReview.push({ file: f.file, candidates: f.candidates });
+         return;
+      }
+      if (uncertain[f.file]) {
+         return;
+      }
+
+      // "Needs review" means nobody has looked at it yet. Once the screening
+      // pass has judged a candidate not-a-meteor it is reviewed, and counting
+      // it here would report work as outstanding that is already done. The
+      // match is per candidate, not per frame: a frame can hold both a
+      // judged candidate and a new one.
+      var outstanding = [];
+      for (var i = 0; i < n; ++i) {
+         if (!judgedNegative[f.file + ":" + i]) {
+            outstanding.push(f.candidates[i]);
+         }
+      }
+      if (outstanding.length > 0) {
+         needsReview.push({ file: f.file, candidates: outstanding });
       }
    });
 
    var recall = gt.meteors.length > 0 ? detected.length / gt.meteors.length : 0;
+
+   function tally(set) {
+      var found = 0, total = 0, missedFiles = [];
+      for (var file in set) {
+         ++total;
+         var hit = false;
+         for (var i = 0; i < detected.length; ++i) {
+            if (detected[i].file === file) {
+               hit = true;
+               break;
+            }
+         }
+         if (hit) {
+            ++found;
+         } else {
+            missedFiles.push(file);
+         }
+      }
+      return { found: found, total: total, missed: missedFiles,
+               rate: total > 0 ? found / total : 0 };
+   }
+
+   var visual = tally(visualFiles);
+   var screening = tally(screeningFiles);
 
    console.log("=========================================================");
    console.log(" MeteorComposer detection evaluation");
@@ -85,11 +161,36 @@ function main() {
    console.log("elapsed:          " + (results.elapsedMs / 1000).toFixed(1) + " s"
                + "  (" + (results.elapsedMs / Math.max(1, framesProcessed)).toFixed(0) + " ms/frame)");
    console.log("");
-   console.log("--- HARD GATE ---------------------------------------");
-   console.log("recall:           " + detected.length + " / " + gt.meteors.length
-               + "  (" + (recall * 100).toFixed(1) + "%)");
+   console.log("--- HARD GATE: detector-independent labels -----------");
+   console.log("visual recall:    " + visual.found + " / " + visual.total
+               + "  (" + (visual.rate * 100).toFixed(1) + "%)");
+   console.log("  These were found by eye without seeing the detector's");
+   console.log("  output, so this number measures detection ability.");
+   if (visual.missed.length > 0) {
+      console.log("  MISSED:");
+      visual.missed.forEach(function (f) {
+         console.log("    - " + f);
+      });
+   }
+   console.log("");
+   console.log("--- REGRESSION NET: labels from the screening UI -----");
+   console.log("screening recall: " + screening.found + " / " + screening.total
+               + "  (" + (screening.rate * 100).toFixed(1) + "%)");
+   console.log("  100% by construction - every one of these was picked out of");
+   console.log("  the detector's own candidate list. It measures nothing about");
+   console.log("  detection ability; it only catches losing one later.");
+   if (screening.missed.length > 0) {
+      console.log("  REGRESSION - these were detected once and are not now:");
+      screening.missed.forEach(function (f) {
+         console.log("    - " + f);
+      });
+   }
+   console.log("");
+   console.log("combined:         " + detected.length + " / " + gt.meteors.length
+               + "  (" + (recall * 100).toFixed(1) + "%)"
+               + "   <- do not quote this as recall");
    if (missed.length > 0) {
-      console.log("MISSED:");
+      console.log("MISSED (all labels):");
       missed.forEach(function (m) {
          console.log("  - " + m.file + "   sigma=" + fmt(m.sigma)
                      + " components=" + m.componentCount);
@@ -98,8 +199,10 @@ function main() {
    console.log("");
    console.log("--- REPORT ONLY -------------------------------------");
    console.log("total candidates: " + candidateTotal);
+   console.log("known false pos:  " + (gt.known_false_positives || []).length
+               + "   (judged not-a-meteor in the screening UI)");
    console.log("needs review:     " + needsReview.length + " frames"
-               + "   (NOT false positives: the labels are known to have misses)");
+               + "   (candidates nobody has judged yet; NOT false positives)");
 
    if (detected.length > 0) {
       console.log("");
@@ -141,6 +244,13 @@ function main() {
       labelledMeteors: gt.meteors.length,
       detected: detected.length,
       recall: recall,
+      visualLabels: visual.total,
+      visualDetected: visual.found,
+      visualRecall: visual.rate,
+      screeningLabels: screening.total,
+      screeningDetected: screening.found,
+      screeningRecall: screening.rate,
+      knownFalsePositives: (gt.known_false_positives || []).length,
       totalCandidates: candidateTotal,
       needsReviewFrames: needsReview.length,
       msPerFrame: results.elapsedMs / Math.max(1, framesProcessed)

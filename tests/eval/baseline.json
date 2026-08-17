@@ -9,10 +9,17 @@
     "minLength": 10
   },
   "framesProcessed": 654,
-  "labelledMeteors": 9,
-  "detected": 9,
+  "labelledMeteors": 31,
+  "detected": 31,
   "recall": 1,
+  "visualLabels": 9,
+  "visualDetected": 9,
+  "visualRecall": 1,
+  "screeningLabels": 22,
+  "screeningDetected": 22,
+  "screeningRecall": 1,
+  "knownFalsePositives": 380,
   "totalCandidates": 411,
-  "needsReviewFrames": 282,
+  "needsReviewFrames": 0,
   "msPerFrame": 757.2889908256881
 }

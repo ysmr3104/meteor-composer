@@ -63,11 +63,36 @@ require_clean() {
 }
 
 sync_remote() {
-   local sha
+   local sha remote_sha dirty
    sha="$(git -C "$REPO" rev-parse --short HEAD)"
    echo "==> 同期: $REMOTE を $sha に更新"
-   ssh "$REMOTE" "zsh -lc 'cd $REMOTE_PATH && git fetch --quiet origin && git checkout --quiet $sha 2>/dev/null || git checkout --quiet -B main origin/main'"
-   echo "==> リモート側の HEAD: $(ssh "$REMOTE" "zsh -lc 'cd $REMOTE_PATH && git rev-parse --short HEAD'")"
+
+   # リモートは本スクリプトが git で完全に制御する使い捨てのチェックアウト。
+   # 評価スクリプトの --save-baseline などが作業ツリーを汚すと checkout が
+   # 失敗するので、破棄する内容を明示してから強制的に合わせる。持ち帰りたい
+   # 成果物は先に --fetch すること。
+   dirty="$(ssh "$REMOTE" "zsh -lc 'cd $REMOTE_PATH && git status --porcelain'")"
+   if [ -n "$dirty" ]; then
+      echo "    リモートに未コミットの変更があります。破棄して $sha に合わせます:" >&2
+      echo "$dirty" | sed 's/^/      /' >&2
+      echo "    （必要なら中断して tools/run-remote.sh --fetch <path> で回収してください）" >&2
+   fi
+
+   ssh "$REMOTE" "zsh -lc 'cd $REMOTE_PATH && git fetch --quiet --prune origin && git checkout --quiet --force $sha'"
+
+   # 同期できたことを必ず検証する。
+   #
+   # 以前はここが checkout 失敗時に main へフォールバックしており、しかも
+   # 黙って続行していた。本スクリプトの存在意義は「結果がどのコミットに
+   # 対するものかを保証する」ことなので、別のコードが走っていることに
+   # 気付けない状態は、テストが落ちるより悪い。合わなければ止める。
+   remote_sha="$(ssh "$REMOTE" "zsh -lc 'cd $REMOTE_PATH && git rev-parse --short HEAD'")"
+   if [ "$remote_sha" != "$sha" ]; then
+      echo "エラー: リモートを $sha に同期できませんでした（現在 $remote_sha）。" >&2
+      echo "       別のコミットで実行すると結果とコミットの対応が失われます。中断します。" >&2
+      exit 1
+   fi
+   echo "==> リモート側の HEAD: $remote_sha"
 }
 
 run_remote() {
@@ -84,10 +109,20 @@ main() {
    case "$1" in
       --fetch)
          # リモートで生成された成果物を手元へ持ってくる。
+         #
+         # REMOTE_PATH は既定で $HOME を含むが、scp のリモートパスは
+         # ログインシェルを通らないため展開されない。先に ssh で実体の
+         # パスを解決してから scp に渡す。
          shift
+         local resolved
+         resolved="$(ssh "$REMOTE" "zsh -lc 'cd $REMOTE_PATH && pwd'")"
+         if [ -z "$resolved" ]; then
+            echo "エラー: リモートのリポジトリパスを解決できません: $REMOTE_PATH" >&2
+            exit 1
+         fi
          for path in "$@"; do
-            echo "==> 取得: $REMOTE:$REMOTE_PATH/$path"
-            scp -q "$REMOTE:$REMOTE_PATH/$path" "$REPO/$path"
+            echo "==> 取得: $REMOTE:$resolved/$path"
+            scp -q "$REMOTE:$resolved/$path" "$REPO/$path"
          done
          ;;
       --pjsr)
