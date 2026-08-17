@@ -24,32 +24,55 @@
 // mapping, not a bare multiplication).
 //============================================================================
 
+// Sized by measurement, not by rule. tests/pjsr/probe_trail_profile.js walked
+// 31 accepted meteors and averaged the residual as a function of distance from
+// the trail's axis:
+//
+//    distance from axis      light          against the residual noise
+//      0 px                  9.20e-4              5.2 sigma
+//      5 px                  1.75e-4              1.0 sigma
+//     15 px                  9.03e-5              0.51 sigma
+//     20 px                  1.62e-5              0.09 sigma
+//     53 px                  ~5e-6                0.03 sigma
+//
+// and past the endpoints, along the axis: 0.87 sigma at the endpoint itself,
+// 0.38 sigma 8 px beyond it, into the noise by 10 px.
+//
+// So the light is gone by 20 px. The first version of this file reached 53 px
+// from the axis (median over the same 31 trails) and covered 5.18% of the
+// frame; the outer two thirds of that carried no meteor at all, only the sub
+// frame's noise, and the composited meteors sat in patches an operator could
+// see. The mask now stops where the light does.
 var DEFAULT_MASK_OPTIONS = {
    // Half-width of the solid core, in full-resolution pixels, measured out
-   // from the trail's axis.
-   //
-   // The detector reports minorLength for each candidate, which is the trail's
-   // own measured width; when that is available the core follows it. This is
-   // the floor for when it is not, and for trails so thin that the measured
-   // width is dominated by noise.
-   coreRadius: 6,
+   // from the trail's axis. Set where the light falls to the noise.
+   coreRadius: 5,
 
    // Multiplier applied to the candidate's measured half-width, when known.
-   // Above 1 so that the core reaches past the pixels that crossed the
-   // detection threshold: a trail does not stop where the threshold does.
-   coreScale: 2.0,
+   //
+   // Zero, because the measurement found no relationship to follow. minorLength
+   // is measured on the 1/8 detection field, where a trail one or two pixels
+   // wide is smaller than a sample, so it reports the sample grid rather than
+   // the trail: the widest candidate of the night (43 px) had light out to 3 px
+   // and the narrowest (8 px) out to 4 px. Scaling the core by it made masks
+   // seven times wider than the light for no reason that survives measurement.
+   //
+   // Kept as an option rather than deleted, because the reasoning applies to
+   // this 1/8 field and not necessarily to another rig's.
+   coreScale: 0,
 
-   // Width of the fade outside the core, in pixels. Wide enough that the
-   // transition is not visible against a smooth sky.
-   featherWidth: 24,
+   // Width of the fade outside the core, in pixels. Reaches 20 px from the
+   // axis, where the light is under a tenth of the noise.
+   featherWidth: 15,
 
    // Extension along the trail's axis beyond each endpoint.
    //
    // The endpoints come from the extreme thresholded samples, which is where
    // the trail dropped below the detection threshold, not where it stopped
    // emitting. Without this the faint tips are cut off, and the tips are
-   // exactly where a meteor's brightening and fading shows.
-   endExtension: 12
+   // exactly where a meteor's brightening and fading shows. The measured light
+   // is still at 0.38 sigma 8 px out, so 10 covers it.
+   endExtension: 10
 };
 
 // Distance from a point to a line segment. The mask is a level set of this,

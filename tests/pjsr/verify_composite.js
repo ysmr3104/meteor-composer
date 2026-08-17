@@ -12,8 +12,13 @@
 //   1. Outside the mask the composite must equal the master EXACTLY. Any
 //      difference there is light that arrived from somewhere it should not
 //      have, and it would be sub-frame noise.
-//   2. Inside the mask the composite must be brighter, not darker. The stage
-//      adds a meteor's light; it does not remove anything.
+//   2. NOWHERE in the frame may the composite be darker than the master, by
+//      any amount. The stage adds a meteor's light; it does not remove
+//      anything. This is stated as an absolute because the version before it
+//      failed exactly here: two frames of a meteor that crossed an exposure
+//      boundary subtracted each other's light and left a black gouge along the
+//      trail, and the check in place at the time - "the mean inside the mask is
+//      positive" - passed while that was happening. A mean cannot see a hole.
 //   3. The brightest additions must sit where the meteors are, which is a
 //      check that the mask is aligned with the trails rather than merely
 //      being somewhere plausible.
@@ -129,6 +134,22 @@ function main() {
       var mask = channelToArray(maskImage, 0);
       var n = mask.length;
 
+      var maskTouched = 0;
+      var maskSolid = 0;
+      for (var mi = 0; mi < n; ++mi) {
+         if (mask[mi] > 0) {
+            ++maskTouched;
+            if (mask[mi] >= 1) {
+               ++maskSolid;
+            }
+         }
+      }
+      log("  mask covers:            " + (maskTouched / n * 100).toFixed(3)
+          + "% of the frame (" + maskTouched + " pixels, " + maskSolid + " solid)");
+      log("  The trail's light was measured to be gone by 20 px from the axis");
+      log("  (tests/pjsr/probe_trail_profile.js). A mask far larger than that");
+      log("  is copying sub-frame noise into the master for nothing.");
+
       section("1. Outside the mask, the composite must equal the master");
 
       var maxOutside = 0;
@@ -186,7 +207,10 @@ function main() {
                if (diff < minInside) {
                   minInside = diff;
                }
-               if (diff < -1e-6) {
+               // Any darkening at all, not a tolerance: the composite adds a
+               // clipped, non-negative quantity, so a negative difference is
+               // not noise but a defect.
+               if (diff < 0) {
                   ++darkenedInside;
                }
                if (diff > brightestValue) {
@@ -206,20 +230,19 @@ function main() {
          log("  FAIL - light arrived where the mask is zero.");
       }
 
-      section("2. Inside the mask, light is added and never removed");
+      section("2. Nowhere is the composite darker than the master");
       log("  samples inside the mask:  " + insideCount + " per channel");
       log("  largest addition:         " + maxInside.toFixed(6));
       log("  most negative change:     " + minInside.toFixed(6));
-      log("  samples darkened by > 1e-6: " + darkenedInside
+      log("  samples darkened at all:  " + darkenedInside
           + " of " + (insideCount * master.numberOfChannels));
       log("  mean change inside:       "
           + (addedTotal / (insideCount * master.numberOfChannels)).toExponential(3));
-      // Some negative samples are expected and correct: the residual carries
-      // the sub's noise, which is symmetric, and clipping it would bias the
-      // sky upward. What matters is that the mean is positive - light was
-      // added overall - not that every single sample rose.
-      if (addedTotal > 0) {
-         log("  PASS - the net effect inside the mask is added light.");
+      if (darkenedInside === 0 && addedTotal > 0) {
+         log("  PASS - light was added and nothing was removed.");
+      } else if (darkenedInside > 0) {
+         log("  FAIL - " + darkenedInside + " samples came out darker than the");
+         log("  master. The composite may only add.");
       } else {
          log("  FAIL - the mask region did not gain light overall.");
       }
