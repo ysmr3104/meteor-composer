@@ -348,6 +348,33 @@ function main() {
                }
             }
 
+            // Enclosed energy: how much of the trail's light a mask of radius
+            // r would contain.
+            //
+            // This is the number that decides how far the mask has to reach,
+            // and it is the one to trust. The reach figures above ask where the
+            // mean crosses the noise, and that question is contaminated: the
+            // residual is not zero at a star, because the master and the sub
+            // differ slightly in PSF and registration, so a star anywhere in a
+            // bin lifts that bin's mean at its own distance. Energy is
+            // dominated by the bright core, so the same star contributes
+            // almost nothing to it.
+            //
+            // Only bins inside the trail's own span are counted, which keeps
+            // stars beyond the endpoints out of the total as well.
+            var enclosed = new Float64Array(PERP_LIMIT + 1);
+            for (d = 0; d <= PERP_LIMIT; ++d) {
+               var ring = 0;
+               for (b = 0; b < binCount; ++b) {
+                  var c0 = (b + 0.5) * BIN_LENGTH - AXIAL_MARGIN;
+                  if (c0 < 0 || c0 > len) {
+                     continue;
+                  }
+                  ring += sums[b][d] - level * counts[b][d];
+               }
+               enclosed[d] = (d > 0 ? enclosed[d - 1] : 0) + ring;
+            }
+
             var maxReach = 0, maxBin = -1;
             for (b = 0; b < binCount; ++b) {
                if (reaches[b] > maxReach) {
@@ -367,7 +394,8 @@ function main() {
                name: name, len: len, peak: peakOfTrail, sigma: sigma,
                median: medianOf(insideReaches), max: maxReach,
                maxAt: maxBin >= 0 ? ((maxBin + 0.5) * BIN_LENGTH - AXIAL_MARGIN) : 0,
-               bins: reaches, binPeaks: peaks, binCount: binCount
+               bins: reaches, binPeaks: peaks, binCount: binCount,
+               enclosed: enclosed
             });
          }
       } finally {
@@ -413,6 +441,50 @@ function main() {
       log("    reach (px) :" + rch.join(""));
       log("    bin peak   :" + pk.join(""));
    }
+
+   section("Enclosed energy: what fraction of the light a radius contains");
+   log("");
+   log("  This is the figure to size the mask by. 100% is everything within "
+       + PERP_LIMIT + " px");
+   log("  of the axis, over the trail's own span only.");
+   log("");
+   var RADII = [2, 3, 4, 5, 6, 8, 10, 12, 15, 20, 30];
+   var headerRow = "  name       peak     ";
+   var ri;
+   for (ri = 0; ri < RADII.length; ++ri) {
+      headerRow += pad(RADII[ri] + "px", 6);
+   }
+   log(headerRow);
+   var curves = [];
+   for (ri = 0; ri < RADII.length; ++ri) {
+      curves.push([]);
+   }
+   for (s = 0; s < summary.length; ++s) {
+      var en = summary[s].enclosed;
+      var total = en[PERP_LIMIT];
+      var row = "  " + pad(summary[s].name, 9) + "  " + pad(summary[s].peak.toFixed(5), 7) + " ";
+      for (ri = 0; ri < RADII.length; ++ri) {
+         var frac = total > 0 ? en[RADII[ri]] / total : 0;
+         row += pad((frac * 100).toFixed(0) + "%", 6);
+         if (total > 0) {
+            curves[ri].push(frac);
+         }
+      }
+      log(row);
+   }
+   log("");
+   var medianRow = "  MEDIAN            ";
+   var worstRow = "  WORST             ";
+   for (ri = 0; ri < RADII.length; ++ri) {
+      medianRow += pad((medianOf(curves[ri]) * 100).toFixed(0) + "%", 6);
+      worstRow += pad((Math.min.apply(null, curves[ri]) * 100).toFixed(0) + "%", 6);
+   }
+   log(medianRow);
+   log(worstRow);
+   log("");
+   log("  WORST is the trail that loses the most at that radius. A mask sized");
+   log("  on the median would clip that one, and it is the bright ones that");
+   log("  spread furthest - which is to say the ones worth keeping.");
 
    section("Summary");
    var medians = [], maxes = [], ratios = [];
