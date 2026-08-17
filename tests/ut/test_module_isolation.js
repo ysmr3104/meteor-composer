@@ -196,6 +196,28 @@ var KEYWORDS = ["if", "for", "while", "switch", "catch", "return", "typeof",
                 "function", "class", "super", "this", "delete", "in", "of",
                 "new", "do", "else", "throw", "case", "void", "instanceof"];
 
+// Parameters are locally bound, so calling one is not a reference to a
+// global. Collected coarsely from every parameter list in the file: this only
+// ever suppresses reports, never adds them, and a parameter name colliding
+// with a genuinely missing global is a narrow enough gap to accept in a
+// heuristic guard. The alternative - an allowlist of known callback names -
+// would have to grow with every new callback and would quietly stop checking.
+function parameterNames(source) {
+   var names = {};
+   var re = /(?:function\s*[A-Za-z0-9_$]*|[A-Za-z0-9_$]+)\s*\(([^)]*)\)\s*\{/g;
+   var m;
+   while ((m = re.exec(source)) !== null) {
+      var parts = m[1].split(",");
+      for (var i = 0; i < parts.length; ++i) {
+         var p = parts[i].trim().replace(/=.*$/, "").trim();
+         if (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(p)) {
+            names[p] = true;
+         }
+      }
+   }
+   return names;
+}
+
 suite("MeteorComposer.js only calls things that exist", function () {
    ok(fs.existsSync(MAIN), "MeteorComposer.js exists");
    if (!fs.existsSync(MAIN)) {
@@ -224,6 +246,8 @@ suite("MeteorComposer.js only calls things that exist", function () {
       declared[mm[1]] = "MeteorComposer.js (method)";
    }
 
+   var params = parameterNames(mainSource);
+
    var unknown = [];
    var calls = bareCalls(mainSource);
    for (i = 0; i < calls.length; ++i) {
@@ -231,7 +255,7 @@ suite("MeteorComposer.js only calls things that exist", function () {
       if (KEYWORDS.indexOf(name) >= 0 || AMBIENT.indexOf(name) >= 0) {
          continue;
       }
-      if (declared[name] !== undefined) {
+      if (declared[name] !== undefined || params[name] === true) {
          continue;
       }
       unknown.push(name);

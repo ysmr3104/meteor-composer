@@ -40,6 +40,10 @@
 
 #define DRAG_THRESHOLD 4
 
+// Written beside the detection results after every verdict, so that closing
+// the dialog - or losing it - never costs the screening work.
+#define AUTOSAVE_NAME "meteor_session.json"
+
 // Overlay colours by verdict. Unreviewed is deliberately the most visible:
 // it is the thing the operator is looking for.
 #define COLOUR_UNREVIEWED 0xFFFFD24A
@@ -59,6 +63,19 @@ function isRealXisf(name) {
        && name.indexOf("._") !== 0
        && name.indexOf(".") !== 0
        && name.toLowerCase().lastIndexOf(".xisf") === name.length - 5;
+}
+
+// Trailing separators are stripped first: a directory chosen from the browser
+// may or may not carry one, and "a/b/" would otherwise yield an empty name.
+function baseName(path) {
+   var trimmed = path.replace(/[\/\\]+$/, "");
+   var cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+   return cut >= 0 ? trimmed.slice(cut + 1) : trimmed;
+}
+
+function directoryOf(path) {
+   var cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+   return cut > 0 ? path.slice(0, cut) : "";
 }
 
 function listFrames(dir) {
@@ -229,10 +246,13 @@ var MeteorPreviewControl = class extends ScrollBox {
    constructor(parent) {
       super(parent);
 
-      this.bitmap = null;
+      this.bitmap = null;         // as rendered, image orientation
+      this.displayBitmap = null;  // what is actually drawn; rotated copy
+      this.rotation = 0;          // 0 / 90 / 180 / 270, clockwise
       this.imageWidth = 0;
       this.imageHeight = 0;
       this.zoomLevel = 1.0;
+      this.onFrameRedrawn = null;
 
       this.candidates = [];
       this.verdicts = [];      // parallel to candidates
@@ -295,16 +315,17 @@ var MeteorPreviewControl = class extends ScrollBox {
          var g = new Graphics(this);
          try {
             g.fillRect(this.boundsRect, new Brush(0xFF202020));
-            if (self.bitmap === null) {
+            var bmp = self.displayBitmap;
+            if (bmp === null) {
                return;
             }
 
-            var dispW = Math.round(self.bitmap.width * self.zoomLevel);
-            var dispH = Math.round(self.bitmap.height * self.zoomLevel);
+            var dispW = Math.round(bmp.width * self.zoomLevel);
+            var dispH = Math.round(bmp.height * self.zoomLevel);
             g.drawScaledBitmap(
                new Rect(-self.scrollX, -self.scrollY,
                         dispW - self.scrollX, dispH - self.scrollY),
-               self.bitmap);
+               bmp);
 
             self.paintOverlay(g, this.width, this.height);
          } finally {
@@ -350,7 +371,12 @@ var MeteorPreviewControl = class extends ScrollBox {
             return;
          }
          if (!self.hasMoved && button === 1) {
-            var img = viewToImage(x, y, self.zoomLevel, self.scrollX, self.scrollY);
+            // The click arrives in view space; candidates live in image
+            // space. With the preview turned, that is two conversions, not
+            // one - view -> display -> image.
+            var disp = viewToImage(x, y, self.zoomLevel, self.scrollX, self.scrollY);
+            var img = displayToImage(disp.x, disp.y, self.rotation,
+                                     self.imageWidth, self.imageHeight);
             var hit = hitTest(self.candidates, img.x, img.y,
                               SCREEN_FACTOR, SCREEN_FACTOR, self.hitPadding());
             if (hit >= 0 && self.onCandidateClick !== null) {
@@ -432,7 +458,8 @@ var MeteorPreviewControl = class extends ScrollBox {
          pad: 2,
          labelSize: { width: 18, height: 13 },
          imageWidth: this.imageWidth,
-         imageHeight: this.imageHeight
+         imageHeight: this.imageHeight,
+         rotation: this.rotation
       });
 
       g.antialiasing = true;
@@ -459,10 +486,45 @@ var MeteorPreviewControl = class extends ScrollBox {
       this.bitmap = rendered === null ? null : rendered.bitmap;
       this.imageWidth = rendered === null ? 0 : rendered.width;
       this.imageHeight = rendered === null ? 0 : rendered.height;
+      this.rebuildDisplayBitmap();
       if (this._needsFit) {
          this.fitToWindow();
       } else {
          this.updateViewport();
+      }
+      if (this.onFrameRedrawn !== null) {
+         this.onFrameRedrawn();
+      }
+   }
+
+   // Bitmap.rotated() takes degrees and turns clockwise (measured; see
+   // preview_geometry.js). A quarter turn of a 6024x4024 frame was 35 ms, so
+   // rotating on every frame change is cheap enough that no rotated copy is
+   // cached beyond the frame on screen.
+   rebuildDisplayBitmap() {
+      if (this.bitmap === null) {
+         this.displayBitmap = null;
+         return;
+      }
+      this.displayBitmap = (normalizeRotation(this.rotation) === 0)
+         ? this.bitmap
+         : this.bitmap.rotated(normalizeRotation(this.rotation));
+   }
+
+   // The rotation is a property of the preview, not of the frame, so it
+   // survives moving to the next candidate.
+   setRotation(degrees) {
+      var previous = normalizeRotation(this.rotation);
+      this.rotation = normalizeRotation(degrees);
+      if (previous === this.rotation) {
+         return;
+      }
+      this.rebuildDisplayBitmap();
+      // Scroll position is meaningless across a turn; refit rather than
+      // leave the operator looking at a corner of the frame.
+      this.fitToWindow();
+      if (this.onFrameRedrawn !== null) {
+         this.onFrameRedrawn();
       }
    }
 
@@ -482,16 +544,18 @@ var MeteorPreviewControl = class extends ScrollBox {
    // Bring a candidate into view without changing the zoom. Used when the
    // operator moves through the list while zoomed in.
    centreOn(candidateIndex) {
-      if (this.bitmap === null || candidateIndex < 0
+      if (this.displayBitmap === null || candidateIndex < 0
           || candidateIndex >= this.candidates.length) {
          return;
       }
       var c = candidateCentroid(this.candidates[candidateIndex],
                                 SCREEN_FACTOR, SCREEN_FACTOR);
+      var d = imageToDisplay(c.x, c.y, this.rotation,
+                             this.imageWidth, this.imageHeight);
       var viewW = this.viewport.width;
       var viewH = this.viewport.height;
-      this.setScroll(c.x * this.zoomLevel - viewW / 2,
-                     c.y * this.zoomLevel - viewH / 2);
+      this.setScroll(d.x * this.zoomLevel - viewW / 2,
+                     d.y * this.zoomLevel - viewH / 2);
    }
 
    setScroll(x, y) {
@@ -503,14 +567,14 @@ var MeteorPreviewControl = class extends ScrollBox {
    }
 
    updateViewport() {
-      if (this.bitmap === null) {
+      if (this.displayBitmap === null) {
          this.setHorizontalScrollRange(0, 0);
          this.setVerticalScrollRange(0, 0);
          this.viewport.update();
          return;
       }
-      var dispW = Math.round(this.bitmap.width * this.zoomLevel);
-      var dispH = Math.round(this.bitmap.height * this.zoomLevel);
+      var dispW = Math.round(this.displayBitmap.width * this.zoomLevel);
+      var dispH = Math.round(this.displayBitmap.height * this.zoomLevel);
       var viewW = this.viewport.width > 0 ? this.viewport.width : this.width;
       var viewH = this.viewport.height > 0 ? this.viewport.height : this.height;
 
@@ -527,7 +591,7 @@ var MeteorPreviewControl = class extends ScrollBox {
    }
 
    fitToWindow() {
-      if (this.bitmap === null) {
+      if (this.displayBitmap === null) {
          return;
       }
       var viewW = this.viewport.width > 0 ? this.viewport.width : this.width;
@@ -535,7 +599,8 @@ var MeteorPreviewControl = class extends ScrollBox {
       if (viewW <= 0 || viewH <= 0) {
          return;
       }
-      this.zoomLevel = Math.min(viewW / this.bitmap.width, viewH / this.bitmap.height);
+      this.zoomLevel = Math.min(viewW / this.displayBitmap.width,
+                                viewH / this.displayBitmap.height);
       this.zoomIndex = this.nearestZoomIndex(this.zoomLevel);
       this.scrollX = 0;
       this.scrollY = 0;
@@ -557,7 +622,7 @@ var MeteorPreviewControl = class extends ScrollBox {
    }
 
    zoomAroundCentre(newZoom) {
-      if (this.bitmap === null || Math.abs(this.zoomLevel - newZoom) < 1e-9) {
+      if (this.displayBitmap === null || Math.abs(this.zoomLevel - newZoom) < 1e-9) {
          return;
       }
       var viewW = this.viewport.width > 0 ? this.viewport.width : this.width;
@@ -592,6 +657,189 @@ var MeteorPreviewControl = class extends ScrollBox {
             return;
          }
       }
+   }
+};
+
+//============================================================================
+// CandidateDetailControl
+//
+// A second view showing just the selected candidate, enlarged. At fit-to-
+// window a trail is a few pixels long on screen, which is not enough to tell
+// a meteor from a satellite, and zooming the main preview loses the context
+// of where the candidate sits in the frame. This pane gives the close look
+// while the main preview keeps the overview.
+//
+// It costs no memory: Graphics.drawScaledBitmapRect() takes a source
+// rectangle and a destination rectangle, so the crop is done at draw time
+// against the bitmap the preview already holds. Nothing is copied.
+//============================================================================
+
+var CandidateDetailControl = class extends Frame {
+   constructor(parent) {
+      super(parent);
+
+      this.bitmap = null;      // the rotated display bitmap, shared with the preview
+      this.box = null;         // selected candidate's box, in display coordinates
+      this.colour = COLOUR_SELECTED;
+      this.margin = 2.5;       // how much context around the box, as a multiple
+
+      var self = this;
+
+      this.onPaint = function () {
+         var g = new Graphics(self);
+         try {
+            g.fillRect(self.boundsRect, new Brush(0xFF181818));
+            if (self.bitmap === null || self.box === null) {
+               g.pen = new Pen(0xFF808080);
+               g.font = new Font("Helvetica", 11);
+               g.drawText(8, 20, "No candidate selected");
+               return;
+            }
+            var src = self.sourceRect();
+            if (src === null) {
+               return;
+            }
+            var dst = new Rect(0, 0, self.width, self.height);
+            g.drawScaledBitmapRect(dst, self.bitmap, src);
+
+            // Mark the candidate itself, so it is clear which part of this
+            // enlarged view is the detection and which is context.
+            var sx = self.width / (src.x1 - src.x0);
+            var sy = self.height / (src.y1 - src.y0);
+            g.pen = new Pen(self.colour, 1.5);
+            g.drawRect(new Rect(
+               Math.round((self.box.left - src.x0) * sx),
+               Math.round((self.box.top - src.y0) * sy),
+               Math.round((self.box.right - src.x0) * sx),
+               Math.round((self.box.bottom - src.y0) * sy)));
+         } finally {
+            g.end();
+         }
+      };
+   }
+
+   // The crop to enlarge: the candidate's box plus context, widened to the
+   // pane's aspect ratio so the image is not stretched, then clamped to the
+   // bitmap. Clamping is done by shifting rather than shrinking, so the
+   // magnification stays the same for a candidate near an edge.
+   sourceRect() {
+      if (this.bitmap === null || this.box === null
+          || this.width <= 0 || this.height <= 0) {
+         return null;
+      }
+      var cx = (this.box.left + this.box.right) / 2;
+      var cy = (this.box.top + this.box.bottom) / 2;
+      var w = Math.max(this.box.right - this.box.left, 1) * this.margin;
+      var h = Math.max(this.box.bottom - this.box.top, 1) * this.margin;
+
+      var aspect = this.width / this.height;
+      if (w / h < aspect) {
+         w = h * aspect;
+      } else {
+         h = w / aspect;
+      }
+      // Never enlarge past the frame itself.
+      if (w > this.bitmap.width) {
+         w = this.bitmap.width;
+         h = w / aspect;
+      }
+      if (h > this.bitmap.height) {
+         h = this.bitmap.height;
+         w = h * aspect;
+      }
+
+      var x0 = cx - w / 2;
+      var y0 = cy - h / 2;
+      if (x0 < 0) {
+         x0 = 0;
+      }
+      if (y0 < 0) {
+         y0 = 0;
+      }
+      if (x0 + w > this.bitmap.width) {
+         x0 = this.bitmap.width - w;
+      }
+      if (y0 + h > this.bitmap.height) {
+         y0 = this.bitmap.height - h;
+      }
+      return new Rect(Math.round(x0), Math.round(y0),
+                      Math.round(x0 + w), Math.round(y0 + h));
+   }
+
+   setSource(bitmap, box, colour) {
+      this.bitmap = bitmap;
+      this.box = box;
+      this.colour = colour === undefined ? COLOUR_SELECTED : colour;
+      this.update();
+   }
+
+   setMargin(margin) {
+      this.margin = Math.max(1.05, Math.min(20, margin));
+      this.update();
+   }
+};
+
+//============================================================================
+// SplitterHandle
+//
+// PJSR has no splitter class, so this is one: a narrow strip between two
+// panes that reports how far it has been dragged. The owner decides what to
+// do with the delta, which keeps this control free of any assumption about
+// which pane grows.
+//============================================================================
+
+var SplitterHandle = class extends Control {
+   constructor(parent, onDragged) {
+      super(parent);
+
+      this.setFixedWidth(7);
+      this.cursor = new Cursor(StdCursor.HorizontalSize);
+      this.toolTip = "<p>Drag to resize the panes.</p>";
+
+      var self = this;
+      this.dragging = false;
+      this.pressX = 0;
+
+      this.onPaint = function () {
+         var g = new Graphics(self);
+         try {
+            g.fillRect(self.boundsRect, new Brush(0xFF3A3A3A));
+            // A few dots down the middle, so the strip reads as a handle
+            // rather than as a gap in the layout.
+            g.pen = new Pen(0xFF808080);
+            var midX = Math.floor(self.width / 2);
+            var midY = Math.floor(self.height / 2);
+            for (var d = -12; d <= 12; d += 6) {
+               g.drawLine(midX, midY + d, midX, midY + d + 2);
+            }
+         } finally {
+            g.end();
+         }
+      };
+
+      this.onMousePress = function (x, y, button, buttonState, modifiers) {
+         if (button === 1) {
+            self.dragging = true;
+            self.pressX = x;
+         }
+      };
+
+      // The handle moves with the pane it resizes, so after applying a delta
+      // the next event's x lands back near pressX. That makes the drag
+      // self-correcting without tracking absolute screen coordinates.
+      this.onMouseMove = function (x, y, buttonState, modifiers) {
+         if (!self.dragging) {
+            return;
+         }
+         var delta = x - self.pressX;
+         if (delta !== 0 && onDragged) {
+            onDragged(delta);
+         }
+      };
+
+      this.onMouseRelease = function (x, y, button, buttonState, modifiers) {
+         self.dragging = false;
+      };
    }
 };
 
@@ -720,25 +968,67 @@ var MeteorComposerDialog = class extends Dialog {
       this.detectionResults = null;
       this.cancelRequested = false;
       this._syncingSelection = false;
+      // Set when a verdict changes, cleared when the work reaches disk by any
+      // route. Autosave normally clears it within a keystroke, so the
+      // confirmation on close only appears when saving is actually failing -
+      // which is exactly when it is worth appearing.
+      this.dirty = false;
+      this.resultsPath = null;
+      this.autosaveError = null;
+      // defaultSortKey() returns "score" for screening mode, but nothing
+      // produces a score yet (Phase 2). Sorting by it would silently be
+      // sorting by nothing, so fall back to capture order until it exists.
       this.sortKey = defaultSortKey(mode);
-      // Capture order reads forwards; score order wants the best first.
-      this.sortAscending = (this.sortKey !== "score");
+      if (this.sortKey === "score") {
+         this.sortKey = "frameIndex";
+      }
+      this.sortAscending = true;
 
       var self = this;
 
       this.windowTitle = TITLE + " " + VERSION + "  -  "
                        + (mode === MODE.GROUND_TRUTH ? "Ground truth" : "Screening");
 
+      this.listWidth = 380;
+      this.detailWidth = 360;
+
       this.buildSourceSection();
       this.buildListSection();
       this.buildPreviewSection();
+      this.buildDetailSection();
       this.buildVerdictSection();
       this.buildButtonSection();
 
+      // PJSR has no splitter, so the panes on either side carry a fixed width
+      // and the preview in the middle takes whatever is left. Dragging a
+      // handle adjusts the neighbouring fixed width.
+      this.listPanel = new Control(this);
+      this.listPanel.sizer = this.listSizer;
+      this.listPanel.setFixedWidth(this.listWidth);
+
+      this.previewPanel = new Control(this);
+      this.previewPanel.sizer = this.previewSizer;
+
+      this.detailPanel = new Control(this);
+      this.detailPanel.sizer = this.detailSizer;
+      this.detailPanel.setFixedWidth(this.detailWidth);
+
+      this.listSplitter = new SplitterHandle(this, function (delta) {
+         self.setListWidth(self.listWidth + delta);
+      });
+      // Dragging the right-hand handle rightwards should shrink the detail
+      // pane, hence the inverted sign.
+      this.detailSplitter = new SplitterHandle(this, function (delta) {
+         self.setDetailWidth(self.detailWidth - delta);
+      });
+
       var split = new HorizontalSizer;
-      split.spacing = 6;
-      split.add(this.listSizer, 38);
-      split.add(this.previewSizer, 62);
+      split.spacing = 0;
+      split.add(this.listPanel);
+      split.add(this.listSplitter);
+      split.add(this.previewPanel, 100);
+      split.add(this.detailSplitter);
+      split.add(this.detailPanel);
 
       this.sizer = new VerticalSizer;
       this.sizer.margin = 8;
@@ -842,15 +1132,12 @@ var MeteorComposerDialog = class extends Dialog {
       this.candidateTree.rootDecoration = false;
       this.candidateTree.multipleSelection = false;
 
-      // The score and classification columns do not exist in ground-truth
-      // mode. This is the mechanism behind that guarantee.
+      // No Score column yet. Classification scoring is Phase 2
+      // (docs/requirements.md 9); until it exists the column would be empty
+      // on every row, which reads as a defect rather than as "not built yet".
+      // modeShowsScores() stays as the gate for when it arrives: in
+      // ground-truth mode the column must not appear at all.
       this.columns = ["#", "File", "Len", "Ang", "Elong", "Track", "Verdict"];
-      this.columnKeys = ["id", "file", "length", "angle", "elongation",
-                         "trackLength", "verdict"];
-      if (modeShowsScores(this.mode)) {
-         this.columns.splice(6, 0, "Score");
-         this.columnKeys.splice(6, 0, "score");
-      }
 
       this.candidateTree.numberOfColumns = this.columns.length;
       for (var i = 0; i < this.columns.length; ++i) {
@@ -874,19 +1161,14 @@ var MeteorComposerDialog = class extends Dialog {
       this.sortCombo.addItem("Elongation");
       this.sortCombo.addItem("Track length");
       this.sortCombo.addItem("Verdict");
-      if (modeShowsScores(this.mode)) {
-         this.sortCombo.addItem("Score");
-      }
       this.sortKeys = ["frameIndex", "length", "elongation", "trackLength", "verdict"];
-      if (modeShowsScores(this.mode)) {
-         this.sortKeys.push("score");
-      }
       this.sortCombo.onItemSelected = function (index) {
          self.sortKey = self.sortKeys[index];
-         self.sortAscending = (self.sortKey !== "score" && self.sortKey !== "length");
+         // Longest first is the useful direction for length; everything else
+         // reads forwards.
+         self.sortAscending = (self.sortKey !== "length");
          self.refreshList();
       };
-      // Start on whichever entry matches the mode's default.
       var startIndex = this.sortKeys.indexOf(this.sortKey);
       this.sortCombo.currentItem = startIndex >= 0 ? startIndex : 0;
 
@@ -968,6 +1250,24 @@ var MeteorComposerDialog = class extends Dialog {
        + "cost about 445 ms of the ~1.2 s each frame takes, and registered "
        + "frames from one session are near-identical, so locking makes "
        + "stepping through the list noticeably quicker.</p>";
+      this.rotateLeftButton = new PushButton(this);
+      this.rotateLeftButton.text = "↶";
+      this.rotateLeftButton.toolTip =
+         "<p>Turn the preview a quarter turn anticlockwise. The rotation is a "
+       + "property of the view, not of the frame, so it stays as you move "
+       + "through the candidates.</p>";
+      this.rotateLeftButton.onClick = function () {
+         self.setRotation(self.preview.rotation - 90);
+      };
+
+      this.rotateRightButton = new PushButton(this);
+      this.rotateRightButton.text = "↷";
+      this.rotateRightButton.toolTip =
+         "<p>Turn the preview a quarter turn clockwise.</p>";
+      this.rotateRightButton.onClick = function () {
+         self.setRotation(self.preview.rotation + 90);
+      };
+
       this.lockSTFCheck.onCheck = function (checked) {
          self.cache.lockSTF = checked;
          if (!checked) {
@@ -986,6 +1286,9 @@ var MeteorComposerDialog = class extends Dialog {
       toolbar.add(this.zoom11Button);
       toolbar.add(this.zoomInButton);
       toolbar.add(this.zoomOutButton);
+      toolbar.addSpacing(8);
+      toolbar.add(this.rotateLeftButton);
+      toolbar.add(this.rotateRightButton);
       toolbar.addSpacing(10);
       toolbar.add(this.lockSTFCheck);
       toolbar.addSpacing(10);
@@ -995,6 +1298,79 @@ var MeteorComposerDialog = class extends Dialog {
       this.previewSizer.spacing = 4;
       this.previewSizer.add(toolbar);
       this.previewSizer.add(this.preview, 100);
+
+      // Whenever the preview redraws its frame - a new frame, or a turn - the
+      // detail pane is looking at a different bitmap and has to follow.
+      this.preview.onFrameRedrawn = function () {
+         self.updateDetail();
+      };
+   }
+
+   buildDetailSection() {
+      var self = this;
+
+      this.detail = new CandidateDetailControl(this);
+      this.detail.setScaledMinSize(220, 220);
+
+      this.detailLabel = new Label(this);
+      this.detailLabel.text = "Selected candidate";
+
+      this.detailInButton = new PushButton(this);
+      this.detailInButton.text = "+";
+      this.detailInButton.onClick = function () {
+         self.detail.setMargin(self.detail.margin / 1.4);
+      };
+
+      this.detailOutButton = new PushButton(this);
+      this.detailOutButton.text = "-";
+      this.detailOutButton.onClick = function () {
+         self.detail.setMargin(self.detail.margin * 1.4);
+      };
+
+      var toolbar = new HorizontalSizer;
+      toolbar.spacing = 4;
+      toolbar.add(this.detailLabel, 100);
+      toolbar.add(this.detailInButton);
+      toolbar.add(this.detailOutButton);
+
+      this.detailSizer = new VerticalSizer;
+      this.detailSizer.spacing = 4;
+      this.detailSizer.add(toolbar);
+      this.detailSizer.add(this.detail, 100);
+   }
+
+   setListWidth(width) {
+      this.listWidth = Math.max(220, Math.min(900, Math.round(width)));
+      this.listPanel.setFixedWidth(this.listWidth);
+   }
+
+   setDetailWidth(width) {
+      this.detailWidth = Math.max(180, Math.min(900, Math.round(width)));
+      this.detailPanel.setFixedWidth(this.detailWidth);
+   }
+
+   setRotation(degrees) {
+      this.preview.setRotation(degrees);
+      this.preview.centreOn(this.preview.selectedIndex);
+   }
+
+   // Point the detail pane at the selected candidate. The box is computed in
+   // display coordinates, because that is the space the rotated bitmap the
+   // pane draws from is in.
+   updateDetail() {
+      var index = this.preview.selectedIndex;
+      if (this.preview.displayBitmap === null || index < 0
+          || index >= this.preview.candidates.length) {
+         this.detail.setSource(null, null);
+         return;
+      }
+      var box = rotateBox(
+         candidateBox(this.preview.candidates[index],
+                      SCREEN_FACTOR, SCREEN_FACTOR, 2),
+         this.preview.rotation, this.preview.imageWidth, this.preview.imageHeight);
+      this.detail.setSource(this.preview.displayBitmap, box,
+                            this.preview.verdictColour(
+                               this.preview.verdicts[index], false));
    }
 
    buildVerdictSection() {
@@ -1024,6 +1400,12 @@ var MeteorComposerDialog = class extends Dialog {
          self.judge(VERDICT.UNCERTAIN);
       };
 
+      this.prevButton = new PushButton(this.verdictGroup);
+      this.prevButton.text = "< Previous (P)";
+      this.prevButton.onClick = function () {
+         self.selectDisplayed(step(self.displayed, self.currentRow, -1), true);
+      };
+
       this.clearVerdictButton = new PushButton(this.verdictGroup);
       this.clearVerdictButton.text = "Clear";
       this.clearVerdictButton.onClick = function () {
@@ -1036,6 +1418,8 @@ var MeteorComposerDialog = class extends Dialog {
       this.verdictGroup.sizer = new HorizontalSizer;
       this.verdictGroup.sizer.margin = 6;
       this.verdictGroup.sizer.spacing = 6;
+      this.verdictGroup.sizer.add(this.prevButton);
+      this.verdictGroup.sizer.addSpacing(10);
       this.verdictGroup.sizer.add(this.meteorButton);
       this.verdictGroup.sizer.add(this.notMeteorButton);
       this.verdictGroup.sizer.add(this.uncertainButton);
@@ -1068,15 +1452,23 @@ var MeteorComposerDialog = class extends Dialog {
       this.closeButton = new PushButton(this);
       this.closeButton.text = "Close";
       this.closeButton.onClick = function () {
-         self.ok();
+         self.requestClose();
       };
+
+      this.autosaveLabel = new Label(this);
+      this.autosaveLabel.text = "";
+      this.autosaveLabel.toolTip =
+         "<p>Verdicts are written to " + AUTOSAVE_NAME + " beside the "
+       + "detection results after every judgement, so there is nothing to "
+       + "remember to save.</p>";
 
       this.buttonSizer = new HorizontalSizer;
       this.buttonSizer.spacing = 6;
       this.buttonSizer.add(this.saveSessionButton);
       this.buttonSizer.add(this.loadSessionButton);
       this.buttonSizer.add(this.exportButton);
-      this.buttonSizer.addStretch();
+      this.buttonSizer.addSpacing(12);
+      this.buttonSizer.add(this.autosaveLabel, 100);
       this.buttonSizer.add(this.closeButton);
    }
 
@@ -1104,7 +1496,14 @@ var MeteorComposerDialog = class extends Dialog {
       this.cancelDetectionButton.enabled = true;
       this.detectButton.enabled = false;
 
-      var results = { group: this.registeredDir, screenFactor: SCREEN_FACTOR,
+      // `group` holds the directory's name, matching what
+      // tests/pjsr/run_detection.js writes, so either producer's file can be
+      // read by either consumer. The full path goes in its own field: a
+      // results file is often carried to another machine where the volume is
+      // mounted somewhere else, so the path is a hint, not the identity.
+      var results = { group: baseName(this.registeredDir),
+                      registeredDir: this.registeredDir,
+                      screenFactor: SCREEN_FACTOR,
                       options: options, frames: [] };
       var withCandidates = 0;
 
@@ -1178,12 +1577,24 @@ var MeteorComposerDialog = class extends Dialog {
       }
       try {
          var payload = JSON.parse(File.readTextFile(dlg.fileName));
+         // Remembered so the autosave lands beside the results it belongs to.
+         this.resultsPath = dlg.fileName;
+         // Only a full path is usable here. `group` is the directory's name,
+         // not a path, so adopting it would produce a path that resolves to
+         // nothing and every frame would fail to open. Leave an
+         // already-chosen directory alone either way.
+         if (this.registeredDir.length === 0 && payload.registeredDir) {
+            this.registeredDir = payload.registeredDir;
+            this.dirEdit.text = payload.registeredDir;
+         }
          this.adoptResults(payload);
-         // Detection results usually sit beside the frames they came from,
-         // but not always; leave the directory alone if it is already set.
-         if (this.registeredDir.length === 0 && payload.group) {
-            this.registeredDir = payload.group;
-            this.dirEdit.text = payload.group;
+         if (this.registeredDir.length === 0) {
+            (new MessageBox(
+               "Results loaded, but this file does not record where the "
+             + "frames are. Choose the registered frames directory with "
+             + "Browse before selecting a candidate, otherwise the preview "
+             + "cannot open them.",
+               TITLE, StdIcon.Information, StdButton.Ok)).execute();
          }
       } catch (e) {
          (new MessageBox("Could not read that file:\n" + e,
@@ -1213,6 +1624,8 @@ var MeteorComposerDialog = class extends Dialog {
       this.cache.clear();
       this.refreshList();
       this.updateEnabled();
+      this.updateAutosaveLabel();
+      this.offerResume();
    }
 
    // --- List ---------------------------------------------------------------
@@ -1237,12 +1650,8 @@ var MeteorComposerDialog = class extends Dialog {
          node.setText(2, row.candidate.length.toFixed(1));
          node.setText(3, row.candidate.angle.toFixed(1));
          node.setText(4, row.candidate.elongation.toFixed(1));
-         var col = 5;
-         node.setText(col++, "" + row.trackLength + (row.persistent ? " *" : ""));
-         if (modeShowsScores(this.mode)) {
-            node.setText(col++, row.score === undefined ? "-" : row.score.toFixed(2));
-         }
-         node.setText(col, this.verdictText(row.verdict));
+         node.setText(5, "" + row.trackLength + (row.persistent ? " *" : ""));
+         node.setText(6, this.verdictText(row.verdict));
       }
 
       if (this.displayed.length > 0) {
@@ -1398,6 +1807,7 @@ var MeteorComposerDialog = class extends Dialog {
          numbers.push(i + 1);
       }
       this.preview.setCandidates(candidates, verdicts, numbers, selected);
+      this.updateDetail();
    }
 
    // --- Judging ------------------------------------------------------------
@@ -1408,11 +1818,14 @@ var MeteorComposerDialog = class extends Dialog {
       }
       var row = this.displayed[this.currentRow];
       setVerdict(this.session, row.id, verdict);
+      this.dirty = true;
 
       var node = this.candidateTree.child(this.currentRow);
       if (node !== null) {
          node.setText(this.columns.length - 1, this.verdictText(verdict));
       }
+
+      this.autosave();
 
       // Judging advances, so a pass through the list is one keystroke per
       // candidate. Correcting means stepping back with the arrow keys.
@@ -1457,6 +1870,11 @@ var MeteorComposerDialog = class extends Dialog {
          case KeyCode.Space:
             this.selectDisplayed(step(this.displayed, this.currentRow, 1), true);
             return true;
+         // P for previous. The arrow keys do the same thing, but M/N/U are
+         // typed with the right hand and reaching for an arrow breaks the
+         // rhythm; N is already taken by not-a-meteor, so there is no
+         // matching letter for "next".
+         case KeyCode.P:
          case KeyCode.Left:
             this.selectDisplayed(step(this.displayed, this.currentRow, -1), true);
             return true;
@@ -1470,6 +1888,124 @@ var MeteorComposerDialog = class extends Dialog {
 
    // --- Persistence --------------------------------------------------------
 
+   // Where the automatic save goes: beside the detection results if they came
+   // from a file, otherwise beside the frames. Both are places the operator
+   // already thinks of as belonging to this session, so the file is where
+   // they would look for it.
+   autosavePath() {
+      var dir = null;
+      if (this.resultsPath !== null) {
+         dir = directoryOf(this.resultsPath);
+      }
+      if ((dir === null || dir.length === 0) && this.registeredDir.length > 0) {
+         dir = this.registeredDir;
+      }
+      if (dir === null || dir.length === 0) {
+         return null;
+      }
+      return dir + "/" + AUTOSAVE_NAME;
+   }
+
+   // Called after every verdict. The payload is a few kilobytes - only the
+   // judged rows are stored - so writing it on each keystroke costs nothing
+   // measurable, and it removes the need for the operator to remember to save.
+   autosave() {
+      if (this.session === null) {
+         return;
+      }
+      var path = this.autosavePath();
+      if (path === null) {
+         this.autosaveError = "nowhere to write to";
+         this.updateAutosaveLabel();
+         return;
+      }
+      try {
+         File.writeTextFile(path, JSON.stringify(toSessionJSON(this.session), null, 2));
+         this.dirty = false;
+         this.autosaveError = null;
+      } catch (e) {
+         // Keep `dirty` set: the work is not safe, and the confirmation on
+         // close is the last thing standing between the operator and losing
+         // it.
+         this.autosaveError = "" + e;
+      }
+      this.updateAutosaveLabel();
+   }
+
+   updateAutosaveLabel() {
+      if (this.autosaveError !== null) {
+         this.autosaveLabel.text = "Autosave FAILED: " + this.autosaveError;
+         return;
+      }
+      var path = this.autosavePath();
+      this.autosaveLabel.text = path === null
+         ? ""
+         : ("Autosaving to " + AUTOSAVE_NAME);
+   }
+
+   // Offer to pick up where the last run left off. Asked rather than applied
+   // silently: an autosave from a different night's work would otherwise
+   // stamp verdicts onto the wrong candidates without the operator noticing.
+   offerResume() {
+      var path = this.autosavePath();
+      if (path === null || !File.exists(path)) {
+         return;
+      }
+      var saved;
+      try {
+         saved = JSON.parse(File.readTextFile(path));
+      } catch (e) {
+         return;
+      }
+      var count = (saved && saved.verdicts) ? saved.verdicts.length : 0;
+      if (count === 0) {
+         return;
+      }
+      // Mixing modes would be worse than starting over: the ground-truth pass
+      // runs looser detection settings, so its candidate list is not the same
+      // list the screening pass sees.
+      if (saved.mode !== undefined && saved.mode !== this.mode) {
+         return;
+      }
+
+      var message = "An automatically saved session was found with "
+                  + count + " verdicts.\n\n" + path + "\n\nResume it?";
+      var box = new MessageBox(message, TITLE, StdIcon.Question,
+                               StdButton.Yes, StdButton.No);
+      if (box.execute() !== StdButton.Yes) {
+         return;
+      }
+      var out = applySessionJSON(this.session, saved);
+      this.refreshList();
+      if (out.orphans.length > 0) {
+         (new MessageBox(
+            "Restored " + out.restored + " verdicts. " + out.orphans.length
+          + " no longer match any candidate and were discarded - the "
+          + "detection parameters have probably changed since.",
+            TITLE, StdIcon.Information, StdButton.Ok)).execute();
+      }
+   }
+
+   // The Close button asks before discarding work. The window's own close
+   // button is not intercepted: Control.onClose()'s return value is not
+   // documented, and guessing wrong would make the dialog impossible to
+   // close. Autosave covers that route instead.
+   requestClose() {
+      if (this.dirty && this.session !== null) {
+         var summary = summarize(this.session);
+         var box = new MessageBox(
+            "There are " + summary.reviewed + " verdicts that could not be "
+          + "saved automatically"
+          + (this.autosaveError !== null ? " (" + this.autosaveError + ")" : "")
+          + ".\n\nClose anyway and lose them?",
+            TITLE, StdIcon.Warning, StdButton.No, StdButton.Yes);
+         if (box.execute() !== StdButton.Yes) {
+            return;
+         }
+      }
+      this.ok();
+   }
+
    saveSession() {
       if (this.session === null) {
          return;
@@ -1477,6 +2013,12 @@ var MeteorComposerDialog = class extends Dialog {
       var dlg = new SaveFileDialog;
       dlg.caption = "Save screening session";
       dlg.filters = [["JSON files", "*.json"]];
+      // Offer the same name and place the autosave uses, so an explicit save
+      // lands where the operator would go looking for it.
+      var suggested = this.autosavePath();
+      if (suggested !== null) {
+         dlg.initialPath = suggested;
+      }
       if (!dlg.execute()) {
          return;
       }
@@ -1499,6 +2041,10 @@ var MeteorComposerDialog = class extends Dialog {
       dlg.caption = "Load screening session";
       dlg.multipleSelections = false;
       dlg.filters = [["JSON files", "*.json"]];
+      var suggested = this.autosavePath();
+      if (suggested !== null) {
+         dlg.initialPath = suggested;
+      }
       if (!dlg.execute()) {
          return;
       }
@@ -1551,11 +2097,30 @@ var MeteorComposerDialog = class extends Dialog {
          this.registeredDir = dir;
          this.dirEdit.text = dir;
       }
+      // Pane widths and the preview's orientation are per-operator working
+      // preferences, not per-session data, so they belong in Settings rather
+      // than in the session file.
+      var listWidth = Settings.read(SETTINGS_KEY + "/listWidth", DataType.Int32);
+      if (listWidth !== null && listWidth > 0) {
+         this.setListWidth(listWidth);
+      }
+      var detailWidth = Settings.read(SETTINGS_KEY + "/detailWidth", DataType.Int32);
+      if (detailWidth !== null && detailWidth > 0) {
+         this.setDetailWidth(detailWidth);
+      }
+      var rotation = Settings.read(SETTINGS_KEY + "/rotation", DataType.Int32);
+      if (rotation !== null) {
+         this.preview.rotation = normalizeRotation(rotation);
+      }
    }
 
    saveSettings() {
       Settings.write(SETTINGS_KEY + "/registeredDir", DataType.String,
                      this.registeredDir);
+      Settings.write(SETTINGS_KEY + "/listWidth", DataType.Int32, this.listWidth);
+      Settings.write(SETTINGS_KEY + "/detailWidth", DataType.Int32, this.detailWidth);
+      Settings.write(SETTINGS_KEY + "/rotation", DataType.Int32,
+                     normalizeRotation(this.preview.rotation));
    }
 
    updateEnabled() {
@@ -1568,6 +2133,7 @@ var MeteorComposerDialog = class extends Dialog {
       this.notMeteorButton.enabled = hasSession;
       this.uncertainButton.enabled = hasSession;
       this.clearVerdictButton.enabled = hasSession;
+      this.prevButton.enabled = hasSession;
    }
 };
 

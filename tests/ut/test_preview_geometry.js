@@ -124,6 +124,63 @@ suite("candidateBox: bounding box in image pixels", function () {
    close(rect.bottom, 87, 1e-9, "bottom uses scaleY");
 });
 
+suite("candidateBounds: falls back to the endpoints when bbox is absent", function () {
+   // Candidate lists saved before detection_core recorded a bbox are still
+   // loadable; the real 2026-08-12 run is one of them. Reading `bbox` blindly
+   // threw for every candidate in that file.
+   var legacy = {
+      cx: 236.8, cy: 135.1,
+      x0: 225, y0: 114, x1: 247, y1: 160,
+      length: 51.0, angle: 64.1, elongation: 9.1, pixelCount: 198,
+      majorLength: 51.6, minorLength: 5.66
+   };
+
+   var b = geom.candidateBounds(legacy);
+   // Endpoints span x 225..247, widened by minorLength/2 = 2.83 and rounded
+   // outwards, so 222..250.
+   ok(b.left === 222, "left comes from the lower endpoint minus half the minor axis");
+   ok(b.right === 250, "right comes from the upper endpoint plus half the minor axis");
+   ok(b.top === 111, "top likewise");
+   ok(b.bottom === 163, "bottom likewise");
+
+   // The endpoints must lie inside the derived box, otherwise the overlay
+   // would not contain the trail it is meant to mark.
+   ok(b.left <= Math.min(legacy.x0, legacy.x1)
+      && b.right >= Math.max(legacy.x0, legacy.x1),
+      "the derived box contains both endpoints in x");
+   ok(b.top <= Math.min(legacy.y0, legacy.y1)
+      && b.bottom >= Math.max(legacy.y0, legacy.y1),
+      "the derived box contains both endpoints in y");
+
+   // Endpoints in either order give the same box.
+   var reversed = geom.candidateBounds({
+      x0: 247, y0: 160, x1: 225, y1: 114, minorLength: 5.66
+   });
+   ok(reversed.left === b.left && reversed.right === b.right,
+      "endpoint order does not matter");
+
+   // Without minorLength the box still forms, just tighter.
+   var noMinor = geom.candidateBounds({ x0: 225, y0: 114, x1: 247, y1: 160 });
+   ok(noMinor.left === 225 && noMinor.right === 247,
+      "without a minor axis the box is the endpoint span");
+
+   // An explicit bbox always wins over the fallback.
+   var withBox = geom.candidateBounds({
+      x0: 0, y0: 0, x1: 1, y1: 1,
+      bbox: { left: 10, top: 20, right: 12, bottom: 21 }
+   });
+   ok(withBox.left === 10 && withBox.right === 12, "an explicit bbox takes priority");
+
+   // candidateBox has to work on a legacy candidate end to end.
+   var box = geom.candidateBox(legacy, 8, 8, 0);
+   ok(box.left === 222 * 8, "candidateBox uses the fallback bounds");
+   ok(box.right === (250 + 1) * 8 - 1, "and still maps the span, not the centre");
+
+   // A degenerate candidate (a single sample) must not produce an inverted box.
+   var dot = geom.candidateBounds({ x0: 5, y0: 5, x1: 5, y1: 5 });
+   ok(dot.left <= dot.right && dot.top <= dot.bottom, "a single-sample box is not inverted");
+});
+
 suite("candidateEndpoints: endpoints use the centre mapping", function () {
    var c = candidate({ left: 10, top: 20, right: 12, bottom: 21 }, [10, 20, 12, 21]);
    var e = geom.candidateEndpoints(c, 8, 8);
@@ -136,6 +193,96 @@ suite("candidateEndpoints: endpoints use the centre mapping", function () {
    var box = geom.candidateBox(c, 8, 8, 0);
    ok(e.x0 >= box.left && e.x1 <= box.right, "endpoints lie within the box in x");
    ok(e.y0 >= box.top && e.y1 <= box.bottom, "endpoints lie within the box in y");
+});
+
+suite("rotation: matches what Bitmap.rotated() actually does", function () {
+   // The reference expectation here is measured, not derived:
+   // tests/pjsr/probe_rotation.js rotated a 40x20 bitmap whose only lit pixel
+   // was at (2,1) and PixInsight returned a 20x40 bitmap with that pixel at
+   // (18,2). If this assertion ever fails, the preview and the overlay have
+   // stopped agreeing with the bitmap they are drawn on.
+   var W = 40, H = 20;
+   var r90 = geom.imageToDisplay(2, 1, 90, W, H);
+   ok(r90.x === 18 && r90.y === 2,
+      "90 CW sends (2,1) to (18,2), as PixInsight does");
+
+   var size90 = geom.rotatedSize(W, H, 90);
+   ok(size90.width === 20 && size90.height === 40, "90 swaps the dimensions");
+
+   // The probe's half-turn result, also measured.
+   var r180 = geom.imageToDisplay(2, 1, 180, W, H);
+   ok(r180.x === 37 && r180.y === 18, "180 sends (2,1) to (37,18), as PixInsight does");
+   var size180 = geom.rotatedSize(W, H, 180);
+   ok(size180.width === 40 && size180.height === 20, "180 keeps the dimensions");
+
+   // Corners go where corners should go.
+   var tl = geom.imageToDisplay(0, 0, 90, W, H);
+   ok(tl.x === H - 1 && tl.y === 0, "90 sends the top-left corner to the top-right");
+
+   // Round trips, every quarter and both directions.
+   var rotations = [0, 90, 180, 270, 360, -90];
+   for (var i = 0; i < rotations.length; ++i) {
+      var rot = rotations[i];
+      var points = [[0, 0], [2, 1], [39, 19], [17, 8]];
+      for (var j = 0; j < points.length; ++j) {
+         var d = geom.imageToDisplay(points[j][0], points[j][1], rot, W, H);
+         var back = geom.displayToImage(d.x, d.y, rot, W, H);
+         ok(back.x === points[j][0] && back.y === points[j][1],
+            "round trip at " + rot + " for (" + points[j] + ")");
+      }
+   }
+
+   // -90 and 270 are the same turn.
+   var a = geom.imageToDisplay(5, 3, -90, W, H);
+   var b = geom.imageToDisplay(5, 3, 270, W, H);
+   ok(a.x === b.x && a.y === b.y, "-90 and 270 agree");
+   var c = geom.imageToDisplay(5, 3, 360, W, H);
+   ok(c.x === 5 && c.y === 3, "360 is the identity");
+
+   // Four quarter turns return to the start.
+   var p = { x: 7, y: 4 };
+   var q = geom.imageToDisplay(p.x, p.y, 90, W, H);          // now 20x40
+   var q2 = geom.imageToDisplay(q.x, q.y, 90, H, W);         // back to 40x20
+   var q3 = geom.imageToDisplay(q2.x, q2.y, 90, W, H);
+   var q4 = geom.imageToDisplay(q3.x, q3.y, 90, H, W);
+   ok(q4.x === p.x && q4.y === p.y, "four quarter turns are the identity");
+
+   // A rotated box must stay a proper box: rotating (left,top) by 90 gives
+   // the top-RIGHT corner, so the result needs re-normalising.
+   var box = { left: 2, top: 1, right: 10, bottom: 5 };
+   var rb = geom.rotateBox(box, 90, W, H);
+   ok(rb.left <= rb.right && rb.top <= rb.bottom, "the rotated box is not inverted");
+   // Its extent swaps: 9 wide x 5 tall becomes 5 wide x 9 tall.
+   ok(rb.right - rb.left === 4, "width becomes the old height");
+   ok(rb.bottom - rb.top === 8, "height becomes the old width");
+   // Every corner of the original lands inside the rotated box.
+   var corners = [[2, 1], [10, 1], [2, 5], [10, 5]];
+   for (var k = 0; k < corners.length; ++k) {
+      var cd = geom.imageToDisplay(corners[k][0], corners[k][1], 90, W, H);
+      ok(cd.x >= rb.left && cd.x <= rb.right && cd.y >= rb.top && cd.y <= rb.bottom,
+         "corner (" + corners[k] + ") lies inside the rotated box");
+   }
+
+   ok(geom.rotateBox(box, 0, W, H).left === 2, "no rotation leaves the box alone");
+});
+
+suite("layoutOverlay honours rotation", function () {
+   var c = candidate({ left: 0, top: 0, right: 1, bottom: 1 }, [0, 0, 1, 1]);
+   var view = { width: 4000, height: 4000, zoom: 1.0, scrollX: 0, scrollY: 0 };
+   var opts = { imageWidth: 6024, imageHeight: 4024 };
+
+   var upright = geom.layoutOverlay([c], 8, 8, view, opts);
+   ok(upright.length === 1, "the candidate is laid out unrotated");
+   close(upright[0].box.left, 0, 1e-9, "unrotated box starts at the left edge");
+
+   // Rotated 90 CW, a candidate at the image's top-left appears at the
+   // display's top-right, so its box must move.
+   var turnedOpts = { imageWidth: 6024, imageHeight: 4024, rotation: 90 };
+   var turned = geom.layoutOverlay([c], 8, 8, view, turnedOpts);
+   ok(turned.length === 1, "the candidate is still laid out when rotated");
+   ok(turned[0].box.left > upright[0].box.left,
+      "a top-left candidate moves right when the view is turned 90 CW");
+   ok(turned[0].box.left <= 4024, "and stays within the rotated width");
 });
 
 suite("imageToView / viewToImage", function () {
