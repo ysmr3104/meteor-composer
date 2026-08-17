@@ -61,6 +61,14 @@ function isRealXisf(name) {
        && name.toLowerCase().lastIndexOf(".xisf") === name.length - 5;
 }
 
+// Trailing separators are stripped first: a directory chosen from the browser
+// may or may not carry one, and "a/b/" would otherwise yield an empty name.
+function baseName(path) {
+   var trimmed = path.replace(/[\/\\]+$/, "");
+   var cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
+   return cut >= 0 ? trimmed.slice(cut + 1) : trimmed;
+}
+
 function listFrames(dir) {
    var names = [];
    var find = new FileFind;
@@ -720,9 +728,14 @@ var MeteorComposerDialog = class extends Dialog {
       this.detectionResults = null;
       this.cancelRequested = false;
       this._syncingSelection = false;
+      // defaultSortKey() returns "score" for screening mode, but nothing
+      // produces a score yet (Phase 2). Sorting by it would silently be
+      // sorting by nothing, so fall back to capture order until it exists.
       this.sortKey = defaultSortKey(mode);
-      // Capture order reads forwards; score order wants the best first.
-      this.sortAscending = (this.sortKey !== "score");
+      if (this.sortKey === "score") {
+         this.sortKey = "frameIndex";
+      }
+      this.sortAscending = true;
 
       var self = this;
 
@@ -842,15 +855,12 @@ var MeteorComposerDialog = class extends Dialog {
       this.candidateTree.rootDecoration = false;
       this.candidateTree.multipleSelection = false;
 
-      // The score and classification columns do not exist in ground-truth
-      // mode. This is the mechanism behind that guarantee.
+      // No Score column yet. Classification scoring is Phase 2
+      // (docs/requirements.md 9); until it exists the column would be empty
+      // on every row, which reads as a defect rather than as "not built yet".
+      // modeShowsScores() stays as the gate for when it arrives: in
+      // ground-truth mode the column must not appear at all.
       this.columns = ["#", "File", "Len", "Ang", "Elong", "Track", "Verdict"];
-      this.columnKeys = ["id", "file", "length", "angle", "elongation",
-                         "trackLength", "verdict"];
-      if (modeShowsScores(this.mode)) {
-         this.columns.splice(6, 0, "Score");
-         this.columnKeys.splice(6, 0, "score");
-      }
 
       this.candidateTree.numberOfColumns = this.columns.length;
       for (var i = 0; i < this.columns.length; ++i) {
@@ -874,19 +884,14 @@ var MeteorComposerDialog = class extends Dialog {
       this.sortCombo.addItem("Elongation");
       this.sortCombo.addItem("Track length");
       this.sortCombo.addItem("Verdict");
-      if (modeShowsScores(this.mode)) {
-         this.sortCombo.addItem("Score");
-      }
       this.sortKeys = ["frameIndex", "length", "elongation", "trackLength", "verdict"];
-      if (modeShowsScores(this.mode)) {
-         this.sortKeys.push("score");
-      }
       this.sortCombo.onItemSelected = function (index) {
          self.sortKey = self.sortKeys[index];
-         self.sortAscending = (self.sortKey !== "score" && self.sortKey !== "length");
+         // Longest first is the useful direction for length; everything else
+         // reads forwards.
+         self.sortAscending = (self.sortKey !== "length");
          self.refreshList();
       };
-      // Start on whichever entry matches the mode's default.
       var startIndex = this.sortKeys.indexOf(this.sortKey);
       this.sortCombo.currentItem = startIndex >= 0 ? startIndex : 0;
 
@@ -1104,7 +1109,14 @@ var MeteorComposerDialog = class extends Dialog {
       this.cancelDetectionButton.enabled = true;
       this.detectButton.enabled = false;
 
-      var results = { group: this.registeredDir, screenFactor: SCREEN_FACTOR,
+      // `group` holds the directory's name, matching what
+      // tests/pjsr/run_detection.js writes, so either producer's file can be
+      // read by either consumer. The full path goes in its own field: a
+      // results file is often carried to another machine where the volume is
+      // mounted somewhere else, so the path is a hint, not the identity.
+      var results = { group: baseName(this.registeredDir),
+                      registeredDir: this.registeredDir,
+                      screenFactor: SCREEN_FACTOR,
                       options: options, frames: [] };
       var withCandidates = 0;
 
@@ -1178,12 +1190,22 @@ var MeteorComposerDialog = class extends Dialog {
       }
       try {
          var payload = JSON.parse(File.readTextFile(dlg.fileName));
+         // Only a full path is usable here. `group` is the directory's name,
+         // not a path, so adopting it would produce a path that resolves to
+         // nothing and every frame would fail to open. Leave an
+         // already-chosen directory alone either way.
+         if (this.registeredDir.length === 0 && payload.registeredDir) {
+            this.registeredDir = payload.registeredDir;
+            this.dirEdit.text = payload.registeredDir;
+         }
          this.adoptResults(payload);
-         // Detection results usually sit beside the frames they came from,
-         // but not always; leave the directory alone if it is already set.
-         if (this.registeredDir.length === 0 && payload.group) {
-            this.registeredDir = payload.group;
-            this.dirEdit.text = payload.group;
+         if (this.registeredDir.length === 0) {
+            (new MessageBox(
+               "Results loaded, but this file does not record where the "
+             + "frames are. Choose the registered frames directory with "
+             + "Browse before selecting a candidate, otherwise the preview "
+             + "cannot open them.",
+               TITLE, StdIcon.Information, StdButton.Ok)).execute();
          }
       } catch (e) {
          (new MessageBox("Could not read that file:\n" + e,
@@ -1237,12 +1259,8 @@ var MeteorComposerDialog = class extends Dialog {
          node.setText(2, row.candidate.length.toFixed(1));
          node.setText(3, row.candidate.angle.toFixed(1));
          node.setText(4, row.candidate.elongation.toFixed(1));
-         var col = 5;
-         node.setText(col++, "" + row.trackLength + (row.persistent ? " *" : ""));
-         if (modeShowsScores(this.mode)) {
-            node.setText(col++, row.score === undefined ? "-" : row.score.toFixed(2));
-         }
-         node.setText(col, this.verdictText(row.verdict));
+         node.setText(5, "" + row.trackLength + (row.persistent ? " *" : ""));
+         node.setText(6, this.verdictText(row.verdict));
       }
 
       if (this.displayed.length > 0) {

@@ -124,6 +124,63 @@ suite("candidateBox: bounding box in image pixels", function () {
    close(rect.bottom, 87, 1e-9, "bottom uses scaleY");
 });
 
+suite("candidateBounds: falls back to the endpoints when bbox is absent", function () {
+   // Candidate lists saved before detection_core recorded a bbox are still
+   // loadable; the real 2026-08-12 run is one of them. Reading `bbox` blindly
+   // threw for every candidate in that file.
+   var legacy = {
+      cx: 236.8, cy: 135.1,
+      x0: 225, y0: 114, x1: 247, y1: 160,
+      length: 51.0, angle: 64.1, elongation: 9.1, pixelCount: 198,
+      majorLength: 51.6, minorLength: 5.66
+   };
+
+   var b = geom.candidateBounds(legacy);
+   // Endpoints span x 225..247, widened by minorLength/2 = 2.83 and rounded
+   // outwards, so 222..250.
+   ok(b.left === 222, "left comes from the lower endpoint minus half the minor axis");
+   ok(b.right === 250, "right comes from the upper endpoint plus half the minor axis");
+   ok(b.top === 111, "top likewise");
+   ok(b.bottom === 163, "bottom likewise");
+
+   // The endpoints must lie inside the derived box, otherwise the overlay
+   // would not contain the trail it is meant to mark.
+   ok(b.left <= Math.min(legacy.x0, legacy.x1)
+      && b.right >= Math.max(legacy.x0, legacy.x1),
+      "the derived box contains both endpoints in x");
+   ok(b.top <= Math.min(legacy.y0, legacy.y1)
+      && b.bottom >= Math.max(legacy.y0, legacy.y1),
+      "the derived box contains both endpoints in y");
+
+   // Endpoints in either order give the same box.
+   var reversed = geom.candidateBounds({
+      x0: 247, y0: 160, x1: 225, y1: 114, minorLength: 5.66
+   });
+   ok(reversed.left === b.left && reversed.right === b.right,
+      "endpoint order does not matter");
+
+   // Without minorLength the box still forms, just tighter.
+   var noMinor = geom.candidateBounds({ x0: 225, y0: 114, x1: 247, y1: 160 });
+   ok(noMinor.left === 225 && noMinor.right === 247,
+      "without a minor axis the box is the endpoint span");
+
+   // An explicit bbox always wins over the fallback.
+   var withBox = geom.candidateBounds({
+      x0: 0, y0: 0, x1: 1, y1: 1,
+      bbox: { left: 10, top: 20, right: 12, bottom: 21 }
+   });
+   ok(withBox.left === 10 && withBox.right === 12, "an explicit bbox takes priority");
+
+   // candidateBox has to work on a legacy candidate end to end.
+   var box = geom.candidateBox(legacy, 8, 8, 0);
+   ok(box.left === 222 * 8, "candidateBox uses the fallback bounds");
+   ok(box.right === (250 + 1) * 8 - 1, "and still maps the span, not the centre");
+
+   // A degenerate candidate (a single sample) must not produce an inverted box.
+   var dot = geom.candidateBounds({ x0: 5, y0: 5, x1: 5, y1: 5 });
+   ok(dot.left <= dot.right && dot.top <= dot.bottom, "a single-sample box is not inverted");
+});
+
 suite("candidateEndpoints: endpoints use the centre mapping", function () {
    var c = candidate({ left: 10, top: 20, right: 12, bottom: 21 }, [10, 20, 12, 21]);
    var e = geom.candidateEndpoints(c, 8, 8);

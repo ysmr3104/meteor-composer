@@ -59,6 +59,38 @@ function viewToImage(vx, vy, zoom, scrollX, scrollY) {
 
 // --- Candidate geometry -----------------------------------------------------
 
+// A candidate's bounds in detection samples.
+//
+// `bbox` is what detection_core produces now, but candidate lists saved
+// before it existed do not carry one, and those files are still worth
+// loading: rerunning a detection over 654 frames costs eight minutes, and
+// docs/requirements.md 7 makes rescreening an old result an explicit
+// use case. So fall back to the endpoints, which every version has recorded.
+//
+// The fallback box is slightly tighter than the real one, because the
+// endpoints lie on the trail's axis while the true bounding box also covers
+// its width. `minorLength` corrects for that when it is present; without it
+// the box can clip the trail by a sample or so, which the caller's `pad`
+// covers in practice.
+function candidateBounds(candidate) {
+   if (candidate.bbox !== undefined && candidate.bbox !== null) {
+      return {
+         left: candidate.bbox.left, top: candidate.bbox.top,
+         right: candidate.bbox.right, bottom: candidate.bbox.bottom
+      };
+   }
+   var half = 0;
+   if (typeof candidate.minorLength === "number" && candidate.minorLength > 0) {
+      half = candidate.minorLength / 2;
+   }
+   return {
+      left: Math.floor(Math.min(candidate.x0, candidate.x1) - half),
+      top: Math.floor(Math.min(candidate.y0, candidate.y1) - half),
+      right: Math.ceil(Math.max(candidate.x0, candidate.x1) + half),
+      bottom: Math.ceil(Math.max(candidate.y0, candidate.y1) + half)
+   };
+}
+
 // A candidate's axis-aligned bounding box in image pixels.
 //
 // requirements.md 7.1 settled on axis-aligned boxes: the concern was that a
@@ -72,7 +104,7 @@ function candidateBox(candidate, scaleX, scaleY, pad) {
    if (pad === undefined) {
       pad = 0;
    }
-   var b = candidate.bbox;
+   var b = candidateBounds(candidate);
    var h = sampleSpanToImage(b.left, b.right, scaleX);
    var v = sampleSpanToImage(b.top, b.bottom, scaleY);
    return {
@@ -216,6 +248,7 @@ if (typeof module !== "undefined") {
       sampleSpanToImage: sampleSpanToImage,
       imageToView: imageToView,
       viewToImage: viewToImage,
+      candidateBounds: candidateBounds,
       candidateBox: candidateBox,
       candidateEndpoints: candidateEndpoints,
       candidateCentroid: candidateCentroid,
