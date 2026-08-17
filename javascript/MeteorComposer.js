@@ -184,13 +184,21 @@ function channelToArray(image, channel) {
 
 // Write a plain array back into one channel.
 //
-// Image.assign() cannot do this: it replaces the whole image, so assigning a
-// one-channel image into channel 0 of an RGB image leaves a one-channel image
-// and the next channel fails. Image.apply() takes a target channel range.
+// The fourth argument of Image.apply() is the TARGET channel. firstChannel and
+// lastChannel refer to the SOURCE image's channels, which is why passing the
+// target there did nothing at all for channels 1 and 2: the source is
+// one-channel, so asking it for channel 1 selected nothing and the call
+// returned without writing and without throwing.
+//
+// That produced a composite with light in R only, and it is exactly the kind
+// of silent no-op that has to be measured rather than reasoned about; see
+// tests/pjsr/probe_channel_write.js for the experiment that settled it.
+//
+// Image.assign() is not an alternative: it replaces the whole image, leaving a
+// one-channel result.
 function arrayToChannel(image, channel, data) {
    var channelImage = (new Matrix(data, image.height, image.width)).toImage();
-   image.apply(channelImage, ImageOp.Mov, new Point(0, 0), 0,
-               new Rect(0, 0, image.width, image.height), channel, channel);
+   image.apply(channelImage, ImageOp.Mov, new Point(0, 0), channel);
 }
 
 // A candidate's trail in full-resolution pixels, ready for trail_mask.
