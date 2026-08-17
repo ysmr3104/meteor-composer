@@ -266,12 +266,21 @@ function main() {
             var sqs = [];
             var counts = [];
             var peaks = [];
+            // Signed perpendicular moment per bin, so that an axis that is
+            // offset or rotated relative to the real trail can be told apart
+            // from light that is genuinely broad. Weighted by the light itself,
+            // clipped at zero: a centroid computed with negative weights is
+            // not a centroid.
+            var offsetNum = [];
+            var offsetDen = [];
             var b, d;
             for (b = 0; b < binCount; ++b) {
                sums.push(new Float64Array(PERP_LIMIT + 1));
                sqs.push(new Float64Array(PERP_LIMIT + 1));
                counts.push(new Float64Array(PERP_LIMIT + 1));
                peaks.push(0);
+               offsetNum.push(0);
+               offsetDen.push(0);
             }
 
             var reach = PERP_LIMIT + AXIAL_MARGIN + 2;
@@ -286,7 +295,8 @@ function main() {
                   var rx = x - trail.x0;
                   var ry = y - trail.y0;
                   var along = rx * ux + ry * uy;
-                  var across = Math.abs(rx * uy - ry * ux);
+                  var signed = rx * uy - ry * ux;
+                  var across = Math.abs(signed);
                   if (across > PERP_LIMIT) {
                      continue;
                   }
@@ -310,6 +320,10 @@ function main() {
                   counts[bin][pb] += 1;
                   if (value > peaks[bin]) {
                      peaks[bin] = value;
+                  }
+                  if (value > 0 && across <= 30) {
+                     offsetNum[bin] += value * signed;
+                     offsetDen[bin] += value;
                   }
                }
             }
@@ -375,6 +389,33 @@ function main() {
                enclosed[d] = (d > 0 ? enclosed[d - 1] : 0) + ring;
             }
 
+            // Light-weighted signed offset per bin, and the trend along the
+            // trail. A constant offset means the axis is displaced; an offset
+            // that runs from one sign to the other means it is rotated.
+            var offsetStrings = [];
+            var firstOffset = null, lastOffset = null;
+            var minOffset = 0, maxOffset = 0;
+            for (b = 0; b < binCount; ++b) {
+               var centre2 = (b + 0.5) * BIN_LENGTH - AXIAL_MARGIN;
+               var off = offsetDen[b] > 0 ? offsetNum[b] / offsetDen[b] : 0;
+               offsetStrings.push(pad(offsetDen[b] > 0 ? off.toFixed(0) : "-", 5));
+               if (centre2 >= 0 && centre2 <= len && offsetDen[b] > 0) {
+                  if (firstOffset === null) {
+                     firstOffset = off;
+                  }
+                  lastOffset = off;
+                  if (off < minOffset) {
+                     minOffset = off;
+                  }
+                  if (off > maxOffset) {
+                     maxOffset = off;
+                  }
+               }
+            }
+            var offsetStart = firstOffset === null ? 0 : firstOffset;
+            var offsetEnd = lastOffset === null ? 0 : lastOffset;
+            var offsetSpan = maxOffset - minOffset;
+
             var maxReach = 0, maxBin = -1;
             for (b = 0; b < binCount; ++b) {
                if (reaches[b] > maxReach) {
@@ -395,7 +436,9 @@ function main() {
                median: medianOf(insideReaches), max: maxReach,
                maxAt: maxBin >= 0 ? ((maxBin + 0.5) * BIN_LENGTH - AXIAL_MARGIN) : 0,
                bins: reaches, binPeaks: peaks, binCount: binCount,
-               enclosed: enclosed
+               enclosed: enclosed, offsets: offsetStrings,
+               offsetStart: offsetStart, offsetEnd: offsetEnd,
+               offsetSpan: offsetSpan
             });
          }
       } finally {
@@ -440,6 +483,7 @@ function main() {
       log("    along axis :" + pos.join(""));
       log("    reach (px) :" + rch.join(""));
       log("    bin peak   :" + pk.join(""));
+      log("    offset (px):" + t.offsets.join(""));
    }
 
    section("Enclosed energy: what fraction of the light a radius contains");
@@ -485,6 +529,35 @@ function main() {
    log("  WORST is the trail that loses the most at that radius. A mask sized");
    log("  on the median would clip that one, and it is the bright ones that");
    log("  spread furthest - which is to say the ones worth keeping.");
+
+   section("Is the assumed axis where the light actually is?");
+   log("");
+   log("  The axis comes from endpoints measured on the 1/8 detection field, so");
+   log("  each endpoint carries up to 4 px of quantisation. Over a long trail a");
+   log("  small error in direction becomes a large displacement at the far end.");
+   log("  If that is what the enclosed-energy table is showing, a narrower mask");
+   log("  would miss the trail rather than trim it.");
+   log("");
+   log("  name       len   peak      2px    20px   offset@start  @end   spread");
+   var offSpans = [];
+   for (s = 0; s < summary.length; ++s) {
+      var e2 = summary[s];
+      var tot = e2.enclosed[PERP_LIMIT];
+      offSpans.push(e2.offsetSpan);
+      log("  " + pad(e2.name, 9)
+          + "  " + pad(e2.len.toFixed(0), 4)
+          + "  " + pad(e2.peak.toFixed(5), 8)
+          + "  " + pad(tot > 0 ? (e2.enclosed[2] / tot * 100).toFixed(0) + "%" : "-", 6)
+          + "  " + pad(tot > 0 ? (e2.enclosed[20] / tot * 100).toFixed(0) + "%" : "-", 6)
+          + "  " + pad(e2.offsetStart.toFixed(1), 12)
+          + "  " + pad(e2.offsetEnd.toFixed(1), 6)
+          + "  " + pad(e2.offsetSpan.toFixed(1), 6));
+   }
+   log("");
+   log("  median offset spread along a trail: " + medianOf(offSpans).toFixed(1) + " px");
+   log("  A spread of a few pixels is quantisation. A spread comparable with");
+   log("  the mask's own radius means the mask is only covering the trail");
+   log("  because it is wide, and tightening it has to wait for a better axis.");
 
    section("Summary");
    var medians = [], maxes = [], ratios = [];
