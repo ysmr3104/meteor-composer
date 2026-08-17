@@ -1,0 +1,256 @@
+//============================================================================
+// test_preview_geometry.js - Small tests for the overlay coordinate math
+//
+// Run: node tests/ut/test_preview_geometry.js
+//
+// Expected values are derived by hand from the definitions of the two
+// mappings, never by calling the implementation back (docs/tests.md 3-2).
+//
+// The distinction the tests exist to pin down: a POINT maps to the centre of
+// its sample, a BOX EDGE maps to the span the samples cover. They differ by
+// up to scale/2, which is 4 px at scale 8 - wider than a meteor trail.
+//============================================================================
+
+var geom = require("../../javascript/preview_geometry.js");
+
+var passed = 0;
+var failed = 0;
+var failures = [];
+
+function ok(condition, message) {
+   if (condition) {
+      ++passed;
+   } else {
+      ++failed;
+      failures.push(message);
+      console.log("  FAIL: " + message);
+   }
+}
+
+function close(actual, expected, tolerance, message) {
+   var diff = Math.abs(actual - expected);
+   ok(diff <= tolerance,
+      message + " (expected " + expected + ", got " + actual + ", diff " + diff + ")");
+}
+
+function suite(name, fn) {
+   console.log("\n=== " + name + " ===");
+   fn();
+}
+
+// A candidate as detection_core would emit it, in detection samples.
+function candidate(bbox, ends) {
+   return {
+      cx: (bbox.left + bbox.right) / 2,
+      cy: (bbox.top + bbox.bottom) / 2,
+      x0: ends[0], y0: ends[1], x1: ends[2], y1: ends[3],
+      bbox: {
+         left: bbox.left, top: bbox.top, right: bbox.right, bottom: bbox.bottom,
+         width: bbox.right - bbox.left + 1,
+         height: bbox.bottom - bbox.top + 1
+      }
+   };
+}
+
+//----------------------------------------------------------------------------
+
+suite("sampleCentreToImage: points land on the centre of their sample", function () {
+   // Sample 0 at scale 8 represents full-resolution pixels 0..7. Its centre
+   // sits between pixels 3 and 4, i.e. 3.5.
+   close(geom.sampleCentreToImage(0, 8), 3.5, 1e-9, "sample 0, scale 8 -> 3.5");
+   // Sample 1 covers 8..15, centre 11.5.
+   close(geom.sampleCentreToImage(1, 8), 11.5, 1e-9, "sample 1, scale 8 -> 11.5");
+   // Sample 100 covers 800..807, centre 803.5.
+   close(geom.sampleCentreToImage(100, 8), 803.5, 1e-9, "sample 100, scale 8 -> 803.5");
+
+   // Scale 1 is the identity: a sample is a pixel and its centre is itself.
+   close(geom.sampleCentreToImage(0, 1), 0, 1e-9, "scale 1 is the identity at 0");
+   close(geom.sampleCentreToImage(37, 1), 37, 1e-9, "scale 1 is the identity at 37");
+
+   // The naive conversion (multiply by scale) is what the probe got wrong.
+   // At scale 8 it is short by exactly 3.5 px, half a sample minus half a
+   // pixel. Asserting the size of the error keeps the reason on record.
+   var naive = 100 * 8;
+   close(geom.sampleCentreToImage(100, 8) - naive, 3.5, 1e-9,
+        "naive n*scale is short by scale/2 - 0.5");
+});
+
+suite("imageToSampleCentre: round trips", function () {
+   var scales = [1, 2, 3, 8];
+   for (var s = 0; s < scales.length; ++s) {
+      for (var n = 0; n < 5; ++n) {
+         close(geom.imageToSampleCentre(geom.sampleCentreToImage(n, scales[s]), scales[s]),
+               n, 1e-9, "round trip n=" + n + " scale=" + scales[s]);
+      }
+   }
+});
+
+suite("sampleSpanToImage: box edges cover the whole span", function () {
+   // Samples 0..0 at scale 8 cover pixels 0..7.
+   var one = geom.sampleSpanToImage(0, 0, 8);
+   close(one.start, 0, 1e-9, "single sample starts at 0");
+   close(one.end, 7, 1e-9, "single sample ends at 7");
+
+   // Samples 2..4 at scale 8 cover pixels 16..39.
+   var many = geom.sampleSpanToImage(2, 4, 8);
+   close(many.start, 16, 1e-9, "samples 2..4 start at 16");
+   close(many.end, 39, 1e-9, "samples 2..4 end at 39");
+
+   // The span is exactly (count * scale) pixels wide.
+   ok(many.end - many.start + 1 === 3 * 8, "3 samples at scale 8 span 24 px");
+
+   // A span edge is NOT the same as a point mapping. Conflating them is the
+   // bug this module exists to prevent.
+   ok(geom.sampleSpanToImage(2, 4, 8).start !== geom.sampleCentreToImage(2, 8),
+      "span start and centre differ");
+});
+
+suite("candidateBox: bounding box in image pixels", function () {
+   var c = candidate({ left: 10, top: 20, right: 12, bottom: 21 }, [10, 20, 12, 21]);
+   var box = geom.candidateBox(c, 8, 8, 0);
+   close(box.left, 80, 1e-9, "left edge = 10 * 8");
+   close(box.top, 160, 1e-9, "top edge = 20 * 8");
+   close(box.right, 103, 1e-9, "right edge = (12 + 1) * 8 - 1");
+   close(box.bottom, 175, 1e-9, "bottom edge = (21 + 1) * 8 - 1");
+
+   var padded = geom.candidateBox(c, 8, 8, 5);
+   close(padded.left, 75, 1e-9, "padding grows the box outwards on the left");
+   close(padded.right, 108, 1e-9, "padding grows the box outwards on the right");
+
+   // Non-square scaling, as would happen if width and height did not divide
+   // evenly by the same factor.
+   var rect = geom.candidateBox(c, 8, 4, 0);
+   close(rect.top, 80, 1e-9, "top uses scaleY");
+   close(rect.bottom, 87, 1e-9, "bottom uses scaleY");
+});
+
+suite("candidateEndpoints: endpoints use the centre mapping", function () {
+   var c = candidate({ left: 10, top: 20, right: 12, bottom: 21 }, [10, 20, 12, 21]);
+   var e = geom.candidateEndpoints(c, 8, 8);
+   close(e.x0, 83.5, 1e-9, "x0 = (10 + 0.5) * 8 - 0.5");
+   close(e.y0, 163.5, 1e-9, "y0 = (20 + 0.5) * 8 - 0.5");
+   close(e.x1, 99.5, 1e-9, "x1 = (12 + 0.5) * 8 - 0.5");
+   close(e.y1, 171.5, 1e-9, "y1 = (21 + 0.5) * 8 - 0.5");
+
+   // Endpoints must sit inside the box that was built from the same bbox.
+   var box = geom.candidateBox(c, 8, 8, 0);
+   ok(e.x0 >= box.left && e.x1 <= box.right, "endpoints lie within the box in x");
+   ok(e.y0 >= box.top && e.y1 <= box.bottom, "endpoints lie within the box in y");
+});
+
+suite("imageToView / viewToImage", function () {
+   var v = geom.imageToView(100, 200, 2.0, 30, 40);
+   close(v.x, 170, 1e-9, "100 * 2 - 30");
+   close(v.y, 360, 1e-9, "200 * 2 - 40");
+
+   var back = geom.viewToImage(v.x, v.y, 2.0, 30, 40);
+   close(back.x, 100, 1e-9, "x round trips");
+   close(back.y, 200, 1e-9, "y round trips");
+
+   // Fractional zoom, as fitToWindow produces.
+   var z = 6024 / 1000;
+   var f = geom.viewToImage(geom.imageToView(4013, 2011, z, 7, 9).x,
+                            geom.imageToView(4013, 2011, z, 7, 9).y, z, 7, 9);
+   close(f.x, 4013, 1e-6, "round trips at fractional zoom");
+});
+
+suite("hitTest", function () {
+   // Two boxes: a large one and a small one inside it.
+   var big = candidate({ left: 0, top: 0, right: 20, bottom: 20 }, [0, 0, 20, 20]);
+   var small = candidate({ left: 5, top: 5, right: 6, bottom: 6 }, [5, 5, 6, 6]);
+   var list = [big, small];
+
+   // A point inside only the large box.
+   ok(geom.hitTest(list, 8, 150, 8, 8, 0) === 0, "point in the large box only");
+
+   // A point inside both: the smaller wins, because the larger would
+   // otherwise make it unreachable.
+   var inSmall = geom.hitTest(list, 44, 44, 8, 8, 0);
+   ok(inSmall === 1, "overlapping boxes resolve to the smaller one");
+
+   // Outside everything.
+   ok(geom.hitTest(list, 5000, 5000, 8, 8, 0) === -1, "miss returns -1");
+
+   // Exactly on the boundary counts as a hit; a pixel outside does not.
+   ok(geom.hitTest([small], 40, 40, 8, 8, 0) === 0, "left/top edge is inclusive");
+   ok(geom.hitTest([small], 55, 55, 8, 8, 0) === 0, "right/bottom edge is inclusive");
+   ok(geom.hitTest([small], 39, 40, 8, 8, 0) === -1, "one pixel left of the box misses");
+   ok(geom.hitTest([small], 56, 55, 8, 8, 0) === -1, "one pixel right of the box misses");
+
+   // Padding widens the target.
+   ok(geom.hitTest([small], 39, 40, 8, 8, 4) === 0, "padding makes the near miss a hit");
+
+   ok(geom.hitTest([], 0, 0, 8, 8, 0) === -1, "empty list returns -1");
+});
+
+suite("labelAnchor: the number never overlaps the box", function () {
+   var box = { left: 100, top: 100, right: 200, bottom: 140 };
+
+   var above = geom.labelAnchor(box, 14, 12, 6024, 4024, 4);
+   close(above.y, 84, 1e-9, "sits above the box: top - gap - height");
+   ok(above.y + 12 <= box.top, "label bottom is above the box top");
+   close(above.x, 100, 1e-9, "aligned with the box left edge");
+
+   // No room above: flip below.
+   var atTop = { left: 100, top: 3, right: 200, bottom: 40 };
+   var below = geom.labelAnchor(atTop, 14, 12, 6024, 4024, 4);
+   ok(below.y >= atTop.bottom, "flips below when there is no room above");
+
+   // Near the right edge the label is pulled back inside the image.
+   var atRight = { left: 6020, top: 100, right: 6023, bottom: 140 };
+   var pulled = geom.labelAnchor(atRight, 14, 12, 6024, 4024, 4);
+   ok(pulled.x + 14 <= 6024, "label stays inside the image on the right");
+   ok(pulled.x >= 0, "label stays inside the image on the left");
+
+   // A box taller than the image has no valid side; the label is clamped
+   // rather than pushed off screen.
+   var huge = { left: 0, top: -10, right: 100, bottom: 5000 };
+   var clamped = geom.labelAnchor(huge, 14, 12, 6024, 4024, 4);
+   ok(clamped.y >= 0, "degenerate box still yields an on-screen label");
+});
+
+suite("layoutOverlay", function () {
+   var c = candidate({ left: 10, top: 10, right: 12, bottom: 11 }, [10, 10, 12, 11]);
+   var view = { width: 800, height: 600, zoom: 1.0, scrollX: 0, scrollY: 0 };
+
+   var laid = geom.layoutOverlay([c], 8, 8, view,
+                                 { imageWidth: 6024, imageHeight: 4024 });
+   ok(laid.length === 1, "one visible candidate is laid out");
+   ok(laid[0].index === 0, "the original index is carried through");
+   close(laid[0].box.left, 80, 1e-9, "box left in view coords at zoom 1");
+   close(laid[0].box.right, 103, 1e-9, "box right in view coords at zoom 1");
+
+   // Scrolled and zoomed.
+   var view2 = { width: 800, height: 600, zoom: 2.0, scrollX: 100, scrollY: 50 };
+   var laid2 = geom.layoutOverlay([c], 8, 8, view2,
+                                  { imageWidth: 6024, imageHeight: 4024 });
+   close(laid2[0].box.left, 80 * 2 - 100, 1e-9, "box left honours zoom and scroll");
+   close(laid2[0].box.top, 80 * 2 - 50, 1e-9, "box top honours zoom and scroll");
+
+   // Off screen candidates are culled.
+   var far = candidate({ left: 700, top: 700, right: 702, bottom: 701 },
+                       [700, 700, 702, 701]);
+   var culled = geom.layoutOverlay([far], 8, 8, view,
+                                   { imageWidth: 6024, imageHeight: 4024 });
+   ok(culled.length === 0, "a candidate outside the viewport is culled");
+
+   // Culling must not renumber the survivors: the label has to match the
+   // candidate list row, so index refers to the input array.
+   var mixed = geom.layoutOverlay([far, c], 8, 8, view,
+                                  { imageWidth: 6024, imageHeight: 4024 });
+   ok(mixed.length === 1, "only the visible one survives");
+   ok(mixed[0].index === 1, "the surviving entry keeps its original index");
+});
+
+//----------------------------------------------------------------------------
+
+console.log("\n============================================");
+console.log("passed: " + passed + "  failed: " + failed);
+if (failed > 0) {
+   console.log("\nFailures:");
+   failures.forEach(function (f) {
+      console.log("  - " + f);
+   });
+   process.exit(1);
+}
+console.log("OK");
