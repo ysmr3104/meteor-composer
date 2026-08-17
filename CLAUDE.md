@@ -133,6 +133,12 @@ tools/run-remote.sh --fetch tests/eval/baseline.json     # 成果物を持ち帰
 
 ## 配布時の注意
 
+**公開は Stage 4（コンポジット生成）まで実装してからです（2026-08-17 決定）。** Phase 1 完成時に公開する方針は撤回しました。当面は private のまま開発を続けるため、**署名・ビルド・配信の作業はまだ行いません**。判断の根拠と、この変更で失うものは [docs/requirements.md](docs/requirements.md) 9 章「公開時期の変更」にあります。
+
+**private が長く続くぶん、上の「main への直接 push は行わない」が効いてきます。** GitHub Free プランでは private リポジトリに branch protection を適用できず、git が拒否してくれない期間が延びます。
+
+以下は公開時に必要になる事項です。
+
 新しいスクリプトなので、配信するには `pixinsight-scripts/integrate.sh` の `SOURCES` 配列への追記が必要です。
 
 **V8 専用（PixInsight 1.9.4 以降）です。** SpiderMonkey には対応しません。既存 2 本が両対応なのは SpiderMonkey で書いたものを移植した経緯によるもので、本スクリプトには当てはまりません。配信する `<platform>` は `1.9.4:9.9.9` の 1 つだけです。
@@ -143,7 +149,7 @@ tools/run-remote.sh --fetch tests/eval/baseline.json     # 成果物を持ち帰
 #feature-id  MeteorComposer : Image Analysis > MeteorComposer | ysmrastro > MeteorComposer
 ```
 
-**本スクリプトの公開時に、既存 2 本も `ysmrastro` カテゴリへ同時掲載するよう変更します。** 詳細と手順は [docs/requirements.md](docs/requirements.md) の 8.3 を参照してください。
+既存 2 本の `ysmrastro` カテゴリ掲載（8.3）は、**本スクリプトの公開から切り離しました。** ManualImageSolver / SplitImageSolver のメニュー登録先を増やす作業に MeteorComposer は必要なく、待つ理由がありません。やりたくなった時点で単独で実施できます。手順は [docs/requirements.md](docs/requirements.md) の 8.3 を参照してください。
 
 ## テスト方針
 
