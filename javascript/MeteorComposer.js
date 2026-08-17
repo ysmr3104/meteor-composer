@@ -25,6 +25,8 @@
 #include "detection_core.js"
 #include "candidate_ops.js"
 #include "classifier.js"
+#include "trail_mask.js"
+#include "composition.js"
 #include "preview_geometry.js"
 #include "session_model.js"
 
@@ -166,6 +168,40 @@ function renderFrame(path, lockedSTF) {
       }
       win.forceClose();
    }
+}
+
+//============================================================================
+// PJSR layer: composition (Stages 3 and 4)
+//
+// The arithmetic is in trail_mask.js and composition.js, both pure JavaScript
+// with Small tests. Only the pixel traffic is here.
+//============================================================================
+
+function channelToArray(image, channel) {
+   image.selectedChannel = channel;
+   return image.toMatrix().toArray();
+}
+
+// Write a plain array back into one channel.
+//
+// Image.assign() cannot do this: it replaces the whole image, so assigning a
+// one-channel image into channel 0 of an RGB image leaves a one-channel image
+// and the next channel fails. Image.apply() takes a target channel range.
+function arrayToChannel(image, channel, data) {
+   var channelImage = (new Matrix(data, image.height, image.width)).toImage();
+   image.apply(channelImage, ImageOp.Mov, new Point(0, 0), 0,
+               new Rect(0, 0, image.width, image.height), channel, channel);
+}
+
+// A candidate's trail in full-resolution pixels, ready for trail_mask.
+function trailFromCandidate(candidate) {
+   return {
+      x0: sampleCentreToImage(candidate.x0, SCREEN_FACTOR),
+      y0: sampleCentreToImage(candidate.y0, SCREEN_FACTOR),
+      x1: sampleCentreToImage(candidate.x1, SCREEN_FACTOR),
+      y1: sampleCentreToImage(candidate.y1, SCREEN_FACTOR),
+      width: (candidate.minorLength || 0) * SCREEN_FACTOR
+   };
 }
 
 //============================================================================
@@ -1520,6 +1556,16 @@ var MeteorComposerDialog = class extends Dialog {
          self.loadSession();
       };
 
+      this.composeButton = new PushButton(this);
+      this.composeButton.text = "Compose...";
+      this.composeButton.toolTip =
+         "<p>Build the meteor composite: the master light with the accepted "
+       + "meteors' own light added inside a feathered mask around each trail. "
+       + "The master is never modified.</p>";
+      this.composeButton.onClick = function () {
+         self.runComposition();
+      };
+
       this.exportButton = new PushButton(this);
       this.exportButton.text = "Export ground truth...";
       this.exportButton.onClick = function () {
@@ -1544,6 +1590,7 @@ var MeteorComposerDialog = class extends Dialog {
       this.buttonSizer.add(this.saveSessionButton);
       this.buttonSizer.add(this.loadSessionButton);
       this.buttonSizer.add(this.exportButton);
+      this.buttonSizer.add(this.composeButton);
       this.buttonSizer.addSpacing(12);
       this.buttonSizer.add(this.autosaveLabel, 100);
       this.buttonSizer.add(this.closeButton);
@@ -2209,6 +2256,199 @@ var MeteorComposerDialog = class extends Dialog {
       }
    }
 
+   // --- Composition (Stages 3 and 4) ---------------------------------------
+
+   // Every candidate the operator judged a meteor, grouped by frame.
+   acceptedTrails() {
+      var byFile = {};
+      for (var i = 0; i < this.session.rows.length; ++i) {
+         var row = this.session.rows[i];
+         if (row.verdict !== VERDICT.METEOR) {
+            continue;
+         }
+         if (byFile[row.file] === undefined) {
+            byFile[row.file] = [];
+         }
+         byFile[row.file].push(trailFromCandidate(row.candidate));
+      }
+      var jobs = [];
+      for (var file in byFile) {
+         jobs.push({ file: file, trails: byFile[file] });
+      }
+      jobs.sort(function (a, b) { return a.file < b.file ? -1 : 1; });
+      return jobs;
+   }
+
+   runComposition() {
+      var self = this;
+      if (this.session === null) {
+         return;
+      }
+      var jobs = this.acceptedTrails();
+      if (jobs.length === 0) {
+         (new MessageBox("No candidates have been judged a meteor yet.",
+                         TITLE, StdIcon.Information, StdButton.Ok)).execute();
+         return;
+      }
+
+      var masterDialog = new OpenFileDialog;
+      masterDialog.caption = "Choose the master light";
+      masterDialog.multipleSelections = false;
+      masterDialog.filters = [["Images", "*.xisf *.fit *.fits *.tif *.tiff"]];
+      if (!masterDialog.execute()) {
+         return;
+      }
+
+      var saveDialog = new SaveFileDialog;
+      saveDialog.caption = "Save the composite as";
+      saveDialog.filters = [["XISF", "*.xisf"]];
+      if (this.registeredDir.length > 0) {
+         saveDialog.initialPath = directoryOf(this.registeredDir) + "/meteor_composite.xisf";
+      }
+      if (!saveDialog.execute()) {
+         return;
+      }
+
+      this.cursor = new Cursor(StdCursor.Wait);
+      try {
+         this.compose(masterDialog.fileName, saveDialog.fileName, jobs);
+      } catch (e) {
+         (new MessageBox("Composition failed:\n" + e,
+                         TITLE, StdIcon.Error, StdButton.Ok)).execute();
+      } finally {
+         this.cursor = new Cursor(StdCursor.Arrow);
+      }
+   }
+
+   compose(masterPath, outputPath, jobs) {
+      var masterWindow = ImageWindow.open(masterPath)[0];
+      if (!masterWindow) {
+         throw new Error("could not open the master: " + masterPath);
+      }
+
+      var composed = 0;
+      var skipped = [];
+      var W, H, channels;
+
+      try {
+         var masterImage = masterWindow.mainView.image;
+         W = masterImage.width;
+         H = masterImage.height;
+         channels = masterImage.numberOfChannels;
+
+         var output = new Image(masterImage);
+         var working = [];
+         var ch;
+         for (ch = 0; ch < channels; ++ch) {
+            working.push(channelToArray(masterImage, ch));
+         }
+
+         var combinedMask = new Float32Array(W * H);
+
+         for (var k = 0; k < jobs.length; ++k) {
+            var job = jobs[k];
+            this.progressLabel.text = "Compositing " + (k + 1) + " / " + jobs.length
+                                    + "   " + job.file;
+            CoreApplication.processEvents();
+
+            var maskField = renderMask(job.trails, W, H, null);
+
+            var subWindow = null;
+            try {
+               subWindow = ImageWindow.open(this.framePath(job.file))[0];
+            } catch (e) {
+               skipped.push(job.file + ": could not open");
+               continue;
+            }
+            if (!subWindow) {
+               skipped.push(job.file + ": could not open");
+               continue;
+            }
+
+            try {
+               var subImage = subWindow.mainView.image;
+               if (subImage.width !== W || subImage.height !== H) {
+                  // A cropped master against uncropped subs would put every
+                  // mask in the wrong place, and the result would look like a
+                  // mask bug rather than a mismatch.
+                  skipped.push(job.file + ": " + subImage.width + "x" + subImage.height
+                               + " does not match the master's " + W + "x" + H);
+                  continue;
+               }
+
+               var channelResults = [];
+               var frameOk = true;
+               for (ch = 0; ch < channels; ++ch) {
+                  var outcome = composeChannel(working[ch],
+                                               channelToArray(subImage, ch),
+                                               maskField.data, null);
+                  var plausible = fitIsPlausible(outcome.fit, null);
+                  if (!plausible.ok) {
+                     // Compositing a frame that does not match the master
+                     // produces a result that looks plausible and is wrong,
+                     // so the frame is left out and the operator is told.
+                     skipped.push(job.file + ": " + plausible.reason);
+                     frameOk = false;
+                     break;
+                  }
+                  channelResults.push(outcome.data);
+               }
+               if (!frameOk) {
+                  continue;
+               }
+               for (ch = 0; ch < channels; ++ch) {
+                  working[ch] = channelResults[ch];
+               }
+               for (var m = 0; m < maskField.data.length; ++m) {
+                  if (maskField.data[m] > combinedMask[m]) {
+                     combinedMask[m] = maskField.data[m];
+                  }
+               }
+               ++composed;
+            } finally {
+               subWindow.forceClose();
+            }
+         }
+
+         for (ch = 0; ch < channels; ++ch) {
+            arrayToChannel(output, ch, working[ch]);
+         }
+
+         var outWindow = new ImageWindow(W, H, channels, masterImage.bitsPerSample,
+                                         masterImage.isReal, masterImage.isColor,
+                                         "MeteorComposite");
+         outWindow.mainView.beginProcess(UndoFlag.NoSwapFile);
+         outWindow.mainView.image.assign(output);
+         outWindow.mainView.endProcess();
+         outWindow.saveAs(outputPath, false, false, false, false);
+         outWindow.forceClose();
+
+         // The mask goes beside the composite. requirements.md 7.2 allows
+         // stopping at Stage 3 and handing the mask over, and when a
+         // composite looks wrong the mask is the first thing to check.
+         var maskPath = outputPath.replace(/\.xisf$/i, "") + "_mask.xisf";
+         var maskWindow = new ImageWindow(W, H, 1, 32, true, false, "MeteorMask");
+         maskWindow.mainView.beginProcess(UndoFlag.NoSwapFile);
+         maskWindow.mainView.image.assign((new Matrix(combinedMask, H, W)).toImage());
+         maskWindow.mainView.endProcess();
+         maskWindow.saveAs(maskPath, false, false, false, false);
+         maskWindow.forceClose();
+
+         var coverage = maskCoverage({ data: combinedMask, width: W, height: H });
+         var message = "Composited " + composed + " of " + jobs.length + " frames.\n\n"
+                     + outputPath + "\n" + maskPath + "\n\n"
+                     + "The mask covers " + (coverage.fraction * 100).toFixed(2)
+                     + "% of the frame.";
+         if (skipped.length > 0) {
+            message += "\n\nLeft out:\n  " + skipped.join("\n  ");
+         }
+         this.progressLabel.text = "Composited " + composed + " / " + jobs.length;
+         (new MessageBox(message, TITLE, StdIcon.Information, StdButton.Ok)).execute();
+      } finally {
+         masterWindow.forceClose();
+      }
+   }
+
    restoreSettings() {
       var dir = Settings.read(SETTINGS_KEY + "/registeredDir", DataType.String);
       if (dir !== null && dir.length > 0) {
@@ -2247,6 +2487,7 @@ var MeteorComposerDialog = class extends Dialog {
       this.saveSessionButton.enabled = hasSession;
       this.loadSessionButton.enabled = hasSession;
       this.exportButton.enabled = hasSession;
+      this.composeButton.enabled = hasSession;
       this.meteorButton.enabled = hasSession;
       this.notMeteorButton.enabled = hasSession;
       this.uncertainButton.enabled = hasSession;
