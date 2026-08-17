@@ -68,6 +68,16 @@ function main() {
       }
    });
 
+   // Candidates the screening pass judged not-a-meteor, keyed per candidate.
+   // Entries written before the UI recorded indexInFrame have no index; those
+   // are ignored here rather than being taken to cover a whole frame.
+   var judgedNegative = {};
+   (gt.known_false_positives || []).forEach(function (m) {
+      if (m.indexInFrame !== undefined) {
+         judgedNegative[m.file + ":" + m.indexInFrame] = true;
+      }
+   });
+
    var detected = [];
    var missed = [];
    var needsReview = [];
@@ -90,8 +100,25 @@ function main() {
          } else {
             missed.push({ file: f.file, sigma: f.sigma, componentCount: f.componentCount });
          }
-      } else if (n > 0 && !uncertain[f.file]) {
-         needsReview.push({ file: f.file, candidates: f.candidates });
+         return;
+      }
+      if (uncertain[f.file]) {
+         return;
+      }
+
+      // "Needs review" means nobody has looked at it yet. Once the screening
+      // pass has judged a candidate not-a-meteor it is reviewed, and counting
+      // it here would report work as outstanding that is already done. The
+      // match is per candidate, not per frame: a frame can hold both a
+      // judged candidate and a new one.
+      var outstanding = [];
+      for (var i = 0; i < n; ++i) {
+         if (!judgedNegative[f.file + ":" + i]) {
+            outstanding.push(f.candidates[i]);
+         }
+      }
+      if (outstanding.length > 0) {
+         needsReview.push({ file: f.file, candidates: outstanding });
       }
    });
 
@@ -175,7 +202,7 @@ function main() {
    console.log("known false pos:  " + (gt.known_false_positives || []).length
                + "   (judged not-a-meteor in the screening UI)");
    console.log("needs review:     " + needsReview.length + " frames"
-               + "   (NOT false positives: the labels are known to have misses)");
+               + "   (candidates nobody has judged yet; NOT false positives)");
 
    if (detected.length > 0) {
       console.log("");
