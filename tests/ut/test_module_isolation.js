@@ -55,7 +55,8 @@ var MODULES = [
    "candidate_ops.js",
    "mask_geometry.js",
    "preview_geometry.js",
-   "session_model.js"
+   "session_model.js",
+   "classifier.js"
 ];
 
 // Top-level declarations only. Nested functions live inside a function scope
@@ -272,7 +273,8 @@ suite("MeteorComposer.js only calls things that exist", function () {
                     "setVerdict", "toSessionJSON", "applySessionJSON",
                     "toGroundTruth", "step", "defaultSortKey", "modeShowsScores",
                     "modeAllowsClassifierFiltering", "layoutOverlay", "hitTest",
-                    "viewToImage", "candidateCentroid"];
+                    "viewToImage", "candidateCentroid",
+                    "markFixedStructures", "scoreAll", "presetNames"];
    for (i = 0; i < crossings.length; ++i) {
       ok(declared[crossings[i]] !== undefined,
          crossings[i] + " is declared by a pure module");
