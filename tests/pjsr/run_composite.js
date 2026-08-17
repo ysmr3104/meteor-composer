@@ -105,10 +105,16 @@ function channelToArray(image, channel) {
    return m.toArray();
 }
 
+// Write a plain array back into one channel.
+//
+// Image.assign() cannot do this: it replaces the whole image, so assigning a
+// one-channel image into channel 0 of an RGB image leaves a one-channel
+// image, and the next channel then fails with "invalid channel index". The
+// per-channel write is Image.apply() with a target channel range.
 function arrayToChannel(image, channel, data) {
-   var m = new Matrix(data, image.height, image.width);
-   image.selectedChannel = channel;
-   image.assign(m.toImage());
+   var channelImage = (new Matrix(data, image.height, image.width)).toImage();
+   image.apply(channelImage, ImageOp.Mov, new Point(0, 0), 0,
+               new Rect(0, 0, image.width, image.height), channel, channel);
 }
 
 function main() {
@@ -337,7 +343,7 @@ function main() {
                                       masterImage.isReal,
                                       masterImage.isColor,
                                       "MeteorComposite");
-      outWindow.mainView.beginProcess(UndoFlag_NoSwapFile);
+      outWindow.mainView.beginProcess(UndoFlag.NoSwapFile);
       outWindow.mainView.image.assign(output);
       outWindow.mainView.endProcess();
       outWindow.saveAs(OUTPUT_PATH, false, false, false, false);
@@ -352,10 +358,10 @@ function main() {
    // mask is the first thing to look at.
    try {
       var maskWindow = new ImageWindow(W, H, 1, 32, true, false, "MeteorMask");
-      maskWindow.mainView.beginProcess(UndoFlag_NoSwapFile);
-      var maskImage = new Image(W, H, 1, ColorSpace.Gray, 32, SampleType_Real);
-      var mm = new Matrix(accumulatedMask.data, H, W);
-      maskImage.assign(mm.toImage());
+      maskWindow.mainView.beginProcess(UndoFlag.NoSwapFile);
+      // Matrix.toImage() already yields a one-channel float image, so there
+      // is no need to construct one and copy into it.
+      var maskImage = (new Matrix(accumulatedMask.data, H, W)).toImage();
       maskWindow.mainView.image.assign(maskImage);
       maskWindow.mainView.endProcess();
       maskWindow.saveAs(MASK_PATH, false, false, false, false);
