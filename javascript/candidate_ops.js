@@ -98,7 +98,7 @@ var DEFAULT_MERGE_OPTIONS = {
 // Merging is transitive: A-B and B-C put A, B and C in one group even when A
 // and C are far apart.
 function mergeCollinear(candidates, options) {
-   var opt = mergeOptions(DEFAULT_MERGE_OPTIONS, options);
+   var opt = mergeWithDefaults(DEFAULT_MERGE_OPTIONS, options);
    var n = candidates.length;
    if (n === 0) {
       return [];
@@ -296,7 +296,7 @@ var DEFAULT_MATCH_OPTIONS = {
 // The return value assigns a track id to every candidate and reports the run
 // length of each track.
 function matchAcrossFrames(frames, options) {
-   var opt = mergeOptions(DEFAULT_MATCH_OPTIONS, options);
+   var opt = mergeWithDefaults(DEFAULT_MATCH_OPTIONS, options);
    var tracks = [];
    var i, j, k;
 
@@ -358,7 +358,7 @@ function matchAcrossFrames(frames, options) {
 
 // --- Utility ---------------------------------------------------------------
 
-function mergeOptions(defaults, options) {
+function mergeWithDefaults(defaults, options) {
    var out = {};
    for (var k in defaults) {
       out[k] = defaults[k];

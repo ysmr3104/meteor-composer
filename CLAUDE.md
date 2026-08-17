@@ -40,7 +40,7 @@ MeteorComposer は、一眼カメラで撮影した流星群の連番画像か�
 | `javascript/candidate_ops.js` | 共線マージ・横断照合 | 実装済み |
 | `javascript/preview_geometry.js` | オーバーレイの座標変換・ヒットテスト（純粋 JS） | 実装済み |
 | `javascript/session_model.js` | スクリーニング状態・判定・JSON 往復（純粋 JS） | 実装済み |
-| `javascript/MeteorComposer.js` | UI とパイプライン統合（PJSR） | 未着手 |
+| `javascript/MeteorComposer.js` | UI とパイプライン統合（PJSR） | 実装済み・**GUI 未検証** |
 | `tests/pjsr/probe_*.js` | PJSR API 実地調査 | 完了 |
 | `tests/pjsr/probe_preview.js` | プレビュー生成の実測 | 完了 |
 | `tests/pjsr/run_detection.js` | 実データでの検出実行 | 実装済み |
@@ -55,6 +55,7 @@ node tests/ut/test_mask_geometry.js
 node tests/ut/test_candidate_ops.js
 node tests/ut/test_preview_geometry.js
 node tests/ut/test_session_model.js
+node tests/ut/test_module_isolation.js   # #include の名前衝突と V8 定数の静的検査
 
 # まとめて実行
 for f in tests/ut/*.js; do node "$f" | tail -2; done
