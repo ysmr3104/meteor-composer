@@ -24,6 +24,7 @@
 
 #include "detection_core.js"
 #include "candidate_ops.js"
+#include "classifier.js"
 #include "preview_geometry.js"
 #include "session_model.js"
 
@@ -975,14 +976,12 @@ var MeteorComposerDialog = class extends Dialog {
       this.dirty = false;
       this.resultsPath = null;
       this.autosaveError = null;
-      // defaultSortKey() returns "score" for screening mode, but nothing
-      // produces a score yet (Phase 2). Sorting by it would silently be
-      // sorting by nothing, so fall back to capture order until it exists.
+      // Screening opens sorted by score, highest first: the ordering was
+      // measured to put 25 of 31 labelled meteors in the top 50 rows.
+      // Ground-truth mode opens in capture order, because ordering by the
+      // classifier's opinion is itself a nudge (docs/tests.md 5-2).
       this.sortKey = defaultSortKey(mode);
-      if (this.sortKey === "score") {
-         this.sortKey = "frameIndex";
-      }
-      this.sortAscending = true;
+      this.sortAscending = (this.sortKey !== "score");
 
       var self = this;
 
@@ -1132,12 +1131,14 @@ var MeteorComposerDialog = class extends Dialog {
       this.candidateTree.rootDecoration = false;
       this.candidateTree.multipleSelection = false;
 
-      // No Score column yet. Classification scoring is Phase 2
-      // (docs/requirements.md 9); until it exists the column would be empty
-      // on every row, which reads as a defect rather than as "not built yet".
-      // modeShowsScores() stays as the gate for when it arrives: in
-      // ground-truth mode the column must not appear at all.
+      // The score column exists only in screening mode. In ground-truth mode
+      // it must not be present at all: showing the classifier's opinion while
+      // someone labels the data it will be evaluated against makes the
+      // evaluation circular (docs/tests.md 5-2).
       this.columns = ["#", "File", "Len", "Ang", "Elong", "Track", "Verdict"];
+      if (modeShowsScores(this.mode)) {
+         this.columns.splice(6, 0, "Score");
+      }
 
       this.candidateTree.numberOfColumns = this.columns.length;
       for (var i = 0; i < this.columns.length; ++i) {
@@ -1162,11 +1163,15 @@ var MeteorComposerDialog = class extends Dialog {
       this.sortCombo.addItem("Track length");
       this.sortCombo.addItem("Verdict");
       this.sortKeys = ["frameIndex", "length", "elongation", "trackLength", "verdict"];
+      if (modeShowsScores(this.mode)) {
+         this.sortCombo.addItem("Score");
+         this.sortKeys.push("score");
+      }
       this.sortCombo.onItemSelected = function (index) {
          self.sortKey = self.sortKeys[index];
          // Longest first is the useful direction for length; everything else
          // reads forwards.
-         self.sortAscending = (self.sortKey !== "length");
+         self.sortAscending = (self.sortKey !== "length" && self.sortKey !== "score");
          self.refreshList();
       };
       var startIndex = this.sortKeys.indexOf(this.sortKey);
@@ -1195,10 +1200,44 @@ var MeteorComposerDialog = class extends Dialog {
          [VERDICT.UNCERTAIN]
       ];
       this.showFilter = null;
+      this.scoreCutoff = 0;
       this.showCombo.onItemSelected = function (index) {
          self.showFilter = self.showFilters[index];
          self.refreshList();
       };
+
+      // Score cutoff. requirements.md 6.2 asks for three presets plus one
+      // slider rather than exposing every threshold. Everything below the
+      // cutoff is still in the session - it is hidden from the list, not
+      // discarded - and the default hides nothing.
+      this.presetLabel = new Label(this);
+      this.presetLabel.text = "Cutoff:";
+      this.presetLabel.textAlignment = TextAlignment.Right | TextAlignment.VerticalCenter;
+
+      this.presetCombo = new ComboBox(this);
+      this.presetNameList = presetNames();
+      for (var pi = 0; pi < this.presetNameList.length; ++pi) {
+         this.presetCombo.addItem(PRESETS[this.presetNameList[pi]].label);
+      }
+      this.presetCombo.currentItem = 0;
+      this.presetCombo.toolTip =
+         "<p>Hide candidates whose score falls below the cutoff. Nothing is "
+       + "deleted: the verdicts and the export still cover every candidate. "
+       + "Measured on the 2026-08-12 session, the strict cutoff kept all 31 "
+       + "labelled meteors while shrinking the list from 411 rows to 116.</p>";
+      this.presetCombo.onItemSelected = function (index) {
+         self.scoreCutoff = PRESETS[self.presetNameList[index]].cutoff;
+         self.refreshList();
+      };
+      // Score-based hiding is classifier-derived, so it has no place in
+      // ground-truth mode (docs/tests.md 5-2).
+      if (!modeShowsScores(this.mode)) {
+         this.presetCombo.enabled = false;
+         this.presetLabel.enabled = false;
+         this.presetCombo.toolTip =
+            "<p>Disabled in ground-truth mode: narrowing the list by the "
+          + "classifier's own score is what makes an evaluation circular.</p>";
+      }
 
       this.hidePersistentCheck = new CheckBox(this);
       this.hidePersistentCheck.text = "Hide persistent tracks";
@@ -1233,6 +1272,9 @@ var MeteorComposerDialog = class extends Dialog {
 
       var controls2 = new HorizontalSizer;
       controls2.spacing = 6;
+      controls2.add(this.presetLabel);
+      controls2.add(this.presetCombo);
+      controls2.addSpacing(8);
       controls2.add(this.hidePersistentCheck);
       controls2.addStretch();
 
@@ -1653,6 +1695,22 @@ var MeteorComposerDialog = class extends Dialog {
       }
       applyTracks(this.session.rows, matchAcrossFrames(forMatching, null));
 
+      // A fixed structure does not respect the linker's frame-gap limit: the
+      // real one appeared in 22 frames spread over 613, and the linker only
+      // ever joined 8 of them. It is found over the whole session instead.
+      var fixed = markFixedStructures(this.session.rows, null);
+      for (var k = 0; k < this.session.rows.length; ++k) {
+         if (this.session.rows[k].stationary) {
+            // Not a satellite. Saying "persistent" here would give the
+            // operator the wrong reason.
+            this.session.rows[k].persistent = false;
+         }
+      }
+      scoreAll(this.session.rows, null);
+      if (fixed.length > 0) {
+         console.writeln("<end><cbr>fixed structures: " + fixed.length);
+      }
+
       var sum = summarize(this.session);
       this.progressLabel.text = results.frames.length + " frames, "
                               + sum.total + " candidates.";
@@ -1674,6 +1732,15 @@ var MeteorComposerDialog = class extends Dialog {
          verdicts: this.showFilter
       };
       var rows = filterRows(this.session, filter);
+      if (this.scoreCutoff > 0 && modeShowsScores(this.mode)) {
+         var kept = [];
+         for (var q = 0; q < rows.length; ++q) {
+            if (rows[q].score === undefined || rows[q].score >= this.scoreCutoff) {
+               kept.push(rows[q]);
+            }
+         }
+         rows = kept;
+      }
       this.displayed = sortRows(this.session, rows, this.sortKey, this.sortAscending);
 
       this.candidateTree.clear();
@@ -1688,8 +1755,12 @@ var MeteorComposerDialog = class extends Dialog {
          node.setText(2, row.candidate.length.toFixed(1));
          node.setText(3, row.candidate.angle.toFixed(1));
          node.setText(4, row.candidate.elongation.toFixed(1));
-         node.setText(5, "" + row.trackLength + (row.persistent ? " *" : ""));
-         node.setText(6, this.verdictText(row.verdict));
+         node.setText(5, this.trackText(row));
+         var col = 6;
+         if (modeShowsScores(this.mode)) {
+            node.setText(col++, row.score === undefined ? "-" : row.score.toFixed(3));
+         }
+         node.setText(col, this.verdictText(row.verdict));
       }
 
       if (this.displayed.length > 0) {
@@ -1703,6 +1774,15 @@ var MeteorComposerDialog = class extends Dialog {
          this.preview.setCandidates([], [], [], -1);
       }
       this.updateSummary();
+   }
+
+   // A fixed structure and a satellite are both "seen many times", but they
+   // are not the same finding and the operator acts on them differently.
+   trackText(row) {
+      if (row.stationary) {
+         return row.fixedCount + " fixed";
+      }
+      return "" + row.trackLength + (row.persistent ? " *" : "");
    }
 
    verdictText(verdict) {

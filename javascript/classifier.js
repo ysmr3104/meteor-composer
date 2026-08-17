@@ -405,10 +405,24 @@ function scoreAll(rows, options) {
 // These are cutoffs on the score, and every one of them is a suggestion: the
 // candidates below the line are still in the list, just sorted to the bottom.
 // "loose" is 0 precisely so that the default hides nothing at all.
+// Measured on the 2026-08-12 session (411 candidates, 31 labelled meteors,
+// tests/eval/evaluate_classifier.js):
+//
+//   cutoff   meteors kept   rows remaining
+//     0.00        31 / 31      411   everything
+//     0.05        31 / 31      369
+//     0.20        31 / 31      116
+//     0.40        31 / 31      100
+//     0.50        29 / 31       87   <- meteors start being lost
+//
+// The lowest-scoring meteor came out at 0.446. These cutoffs sit well below
+// it on purpose: a threshold read off one night's data would be fitted to
+// that night, and the cost of being wrong is asymmetric. `strict` at 0.20
+// leaves better than a factor of two in hand, `standard` closer to nine.
 var PRESETS = {
    loose:    { cutoff: 0.0,  label: "Loose - show everything" },
-   standard: { cutoff: 0.1,  label: "Standard - drop fixed structures" },
-   strict:   { cutoff: 0.35, label: "Strict - likely meteors only" }
+   standard: { cutoff: 0.05, label: "Standard - drop fixed structures" },
+   strict:   { cutoff: 0.20, label: "Strict - likely meteors first" }
 };
 
 function presetNames() {
