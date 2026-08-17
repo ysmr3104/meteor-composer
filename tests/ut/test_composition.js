@@ -108,114 +108,148 @@ suite("linearFit recovers a known relationship", function () {
    ok(none.samples === 0 && none.scale === 1, "empty input is the identity");
 });
 
-suite("the fit excludes the trail", function () {
-   // If the meteor is inside the fit, the fit absorbs part of it and the
-   // residual - which IS the meteor - comes out too small.
-   var n = 2000;
+suite("fitOnGrid excludes the trail and still has plenty of samples", function () {
+   // If the meteor is inside the fit, the fit absorbs part of it and the light
+   // that is then added - which IS the meteor - comes out too small.
+   var W = 200, H = 100;
+   var n = W * H;
    var master = makeMaster(n, 3);
    var sub = makeSub(master, 1.5, 0.01, 0, 5);
 
-   // A bright meteor over a tenth of the frame.
    var mask = new Float32Array(n);
    var i;
-   for (i = 900; i < 1100; ++i) {
-      mask[i] = 1;
-      sub[i] += 0.5;
-   }
-
-   var excluded = comp.fitMasterToSub(master, sub, mask, 0);
-   var included = comp.linearFit(master, sub);
-
-   close(excluded.scale, 1.5, 1e-3, "excluding the trail recovers the true scale");
-   ok(Math.abs(included.scale - 1.5) > Math.abs(excluded.scale - 1.5),
-      "including it makes the fit worse");
-   ok(excluded.samples === n - 200, "the masked samples were left out");
-
-   // And the consequence: the meteor's amplitude survives.
-   var res = comp.residual(master, sub, excluded);
-   close(res[1000], 0.5, 1e-3, "the residual carries the meteor's full amplitude");
-});
-
-suite("outside the mask the master is untouched", function () {
-   // The property that rules out a lighten blend. The sub here is twenty
-   // times noisier than the master and contains no meteor at all; the
-   // composite must return the master exactly wherever the mask is zero, and
-   // must not brighten the sky where the mask is not zero either.
-   var n = 4000;
-   var master = makeMaster(n, 21);
-   var sub = makeSub(master, 1.2, 0.005, 0.01, 23);
-
-   var mask = new Float32Array(n);
-   var i;
-   for (i = 1000; i < 1200; ++i) {
-      mask[i] = 1;
-   }
-
-   var result = comp.composeChannel(master, sub, mask, null);
-
-   for (i = 0; i < 900; ++i) {
-      close(result.data[i], master[i], 1e-6,
-            i === 0 ? "outside the mask the result is the master exactly" : "");
-      if (i > 20) {
-         break;
+   for (i = 0; i < n; ++i) {
+      // A bright meteor down one column band, masked.
+      var x = i % W;
+      if (x >= 90 && x < 110) {
+         mask[i] = 1;
+         sub[i] += 0.5;
       }
    }
 
-   // Inside the mask, with no meteor present, the result is the master plus
-   // noise that averages to zero - not the master plus a bias.
-   var sum = 0;
-   for (i = 1000; i < 1200; ++i) {
-      sum += result.data[i] - master[i];
-   }
-   var meanShift = sum / 200;
-   ok(Math.abs(meanShift) < 0.001,
-      "with no meteor, the masked sky is not lifted (mean shift "
-      + meanShift.toFixed(6) + ")");
+   var excluded = comp.fitOnGrid(master, sub, mask, W, H, null);
+   var included = comp.fitOnGrid(master, sub, new Float32Array(n), W, H, null);
 
-   // A lighten blend would have taken the brighter of the two everywhere in
-   // the mask, which with this much noise lifts the sky substantially. Show
-   // the number that decision avoided.
-   var lightenShift = 0;
-   for (i = 1000; i < 1200; ++i) {
-      lightenShift += Math.max(master[i], sub[i]) - master[i];
-   }
-   lightenShift /= 200;
-   ok(lightenShift > Math.abs(meanShift) * 10,
-      "a lighten blend would have lifted it by " + lightenShift.toFixed(6)
-      + ", far more than this does");
+   close(excluded.scale, 1.5, 1e-2, "excluding the trail recovers the true scale");
+   ok(Math.abs(included.scale - 1.5) > Math.abs(excluded.scale - 1.5),
+      "including it makes the fit worse");
+   ok(excluded.samples > 300,
+      "a stride of 7 still leaves hundreds of samples here ("
+      + excluded.samples + ")");
+
+   // The stride must not change the answer. Two coefficients do not need every
+   // pixel, and that is the whole justification for striding.
+   var dense = comp.fitOnGrid(master, sub, mask, W, H, { fitStride: 1 });
+   close(excluded.scale, dense.scale, 1e-3, "the stride does not move the scale");
+   ok(dense.samples > excluded.samples * 20,
+      "and the dense fit really did use far more samples");
 });
 
-suite("inside the mask the meteor is added at full strength", function () {
-   var n = 4000;
-   var master = makeMaster(n, 31);
-   var sub = makeSub(master, 1.4, 0.02, 0, 37);
+suite("localBackground measures the sky the fit did not match", function () {
+   // The fit is global; a patch of sky that sits a little high or low relative
+   // to the master leaves a level error behind, and the mask would paint it
+   // into the result in its own shape. This finds it in the ring outside the
+   // mask, where the composite touches nothing.
+   var W = 300, H = 200;
+   var n = W * H;
+   var master = makeMaster(n, 61);
+   var sub = makeSub(master, 1.2, 0.005, 0.0002, 63);
+
+   var rect = { left: 100, top: 80, right: 200, bottom: 120 };
+   var mask = new Float32Array(n);
+   var x, y, i;
+   for (y = rect.top; y <= rect.bottom; ++y) {
+      for (x = rect.left; x <= rect.right; ++x) {
+         mask[y * W + x] = 1;
+      }
+   }
+
+   // A known local excess over a generous area around the rectangle, plus a
+   // bright meteor inside the mask that must NOT influence the estimate.
+   var LOCAL = 0.0012;
+   for (y = 40; y < 170; ++y) {
+      for (x = 60; x < 250; ++x) {
+         sub[y * W + x] += LOCAL;
+      }
+   }
+   for (y = 95; y <= 105; ++y) {
+      for (x = 120; x <= 180; ++x) {
+         sub[y * W + x] += 0.4;
+      }
+   }
+
+   // The TRUE relationship, not a fitted one. A fit over a frame where the
+   // excess covers 40% of the pixels would absorb much of it into its own
+   // offset, and this test is about what localBackground reads off a residual -
+   // not about how much of a large excess a global fit leaves behind.
+   var fit = { scale: 1.2, offset: 0.005, samples: 100000 };
+   var bg = comp.localBackground(master, sub, fit, mask, W, H, rect, null);
+
+   close(bg.level, LOCAL, 3e-4, "the local level is recovered from the ring");
+   ok(bg.samples > 500, "from a useful number of samples (" + bg.samples + ")");
+   ok(bg.sigma > 0 && bg.sigma < 0.001,
+      "and a noise figure comes with it (" + bg.sigma.toExponential(2) + ")");
+
+   // The meteor is inside the mask, so it cannot have contributed. If it had,
+   // the level would be pulled towards 0.4 and the meteor would then be
+   // subtracted from itself.
+   ok(bg.level < LOCAL + 0.01, "the masked meteor did not contribute");
+});
+
+suite("light is added, never removed", function () {
+   // The property the earlier signed version did not have. An operator expects
+   // the meteor to be laid on top of the master: nothing in the frame may come
+   // out darker than the master did, anywhere, for any reason.
+   var W = 100, H = 60;
+   var n = W * H;
+   var master = makeMaster(n, 21);
+   // A sub that is uniformly DARKER than the fitted master everywhere, and
+   // twenty times noisier. There is no meteor in it at all.
+   var sub = makeSub(master, 1.2, 0.005, 0.01, 23);
 
    var mask = new Float32Array(n);
-   var i;
-   for (i = 2000; i < 2100; ++i) {
-      mask[i] = 1;
-      sub[i] += 0.25;
-   }
-   // A feathered shoulder, as a real mask has.
-   for (i = 1950; i < 2000; ++i) {
-      mask[i] = (i - 1950) / 50;
+   var rect = { left: 20, top: 20, right: 60, bottom: 40 };
+   var x, y, i;
+   for (y = rect.top; y <= rect.bottom; ++y) {
+      for (x = rect.left; x <= rect.right; ++x) {
+         mask[y * W + x] = 1;
+      }
    }
 
-   var result = comp.composeChannel(master, sub, mask, null);
+   var fit = comp.fitOnGrid(master, sub, mask, W, H, null);
+   var added = new Float32Array(n);
+   comp.addTrailLight(master, sub, fit, mask, W, rect, { level: 0 }, added);
 
-   close(result.data[2050] - master[2050], 0.25, 1e-3,
-         "the full amplitude arrives where the mask is solid");
-   close(result.data[1975] - master[1975], 0, 1e-3,
-         "and nothing arrives in the shoulder where the sub has no meteor");
-   close(result.peakAdded, 0.25, 1e-3, "the reported peak matches");
-   ok(result.addedEnergy > 0, "energy was added");
-   close(result.fit.scale, 1.4, 1e-3, "the fit is still right");
+   var negative = 0;
+   var lifted = 0;
+   for (i = 0; i < n; ++i) {
+      if (added[i] < 0) {
+         ++negative;
+      }
+      if (added[i] > 0) {
+         lifted += added[i];
+      }
+   }
+   ok(negative === 0, "no negative light was written anywhere");
+
+   var masked = (rect.right - rect.left + 1) * (rect.bottom - rect.top + 1);
+   var meanLift = lifted / masked;
+
+   // Clipping does have a cost, and it is bounded: half of a symmetric noise
+   // distribution survives, which lifts the masked sky by sigma/sqrt(2*pi).
+   // The test states the bound rather than pretending the cost is zero.
+   var subSigma = 0.01 / Math.sqrt(12);   // uniform noise of that width
+   var expectedLift = subSigma / Math.sqrt(2 * Math.PI);
+   ok(meanLift < expectedLift * 2,
+      "the lift stays near sigma/sqrt(2*pi) (" + meanLift.toExponential(2)
+      + " against " + expectedLift.toExponential(2) + ")");
 });
 
 suite("the feather is reproduced proportionally", function () {
    // A mask value of 0.5 must add half the meteor, not all of it and not
    // none: that is what makes the edge invisible.
-   var n = 1000;
+   var W = 20, H = 1;
+   var n = W * H;
    var master = new Float32Array(n);
    var sub = new Float32Array(n);
    var mask = new Float32Array(n);
@@ -223,47 +257,231 @@ suite("the feather is reproduced proportionally", function () {
       master[i] = 0.1;
       sub[i] = 0.1;
    }
-   // The meteor goes ONLY where the mask is. An earlier version of this
-   // fixture put a bright region across 400-600 while masking just four
-   // samples of it; the fit then correctly concluded that the sub was
-   // brighter overall and absorbed most of the meteor into the offset. That
-   // was the fit working, not failing - but it meant the fixture was not
-   // testing what it claimed to.
-   mask[500] = 1.0;
-   mask[501] = 0.5;
-   mask[502] = 0.25;
-   mask[503] = 0.0;
-   for (i = 500; i <= 502; ++i) {
+   mask[10] = 1.0;
+   mask[11] = 0.5;
+   mask[12] = 0.25;
+   mask[13] = 0.0;
+   for (i = 10; i <= 12; ++i) {
       sub[i] = 0.1 + 0.4;
    }
 
-   var result = comp.composeChannel(master, sub, mask, null);
-   close(result.data[500] - 0.1, 0.4, 1e-6, "mask 1.0 adds all of it");
-   close(result.data[501] - 0.1, 0.2, 1e-6, "mask 0.5 adds half");
-   close(result.data[502] - 0.1, 0.1, 1e-6, "mask 0.25 adds a quarter");
-   close(result.data[503] - 0.1, 0.0, 1e-6, "mask 0 adds nothing");
-   // And the samples the fit was computed from are untouched.
-   close(result.data[100], 0.1, 1e-6, "unmasked sky is exactly the master");
+   var fit = { scale: 1, offset: 0, samples: 1000 };
+   var added = new Float32Array(n);
+   comp.addTrailLight(master, sub, fit, mask, W,
+                      { left: 0, top: 0, right: W - 1, bottom: 0 },
+                      { level: 0 }, added);
+
+   close(added[10], 0.4, 1e-6, "mask 1.0 adds all of it");
+   close(added[11], 0.2, 1e-6, "mask 0.5 adds half");
+   close(added[12], 0.1, 1e-6, "mask 0.25 adds a quarter");
+   close(added[13], 0.0, 1e-9, "mask 0 adds nothing");
+   close(added[0], 0.0, 1e-9, "and unmasked sky is untouched");
 });
 
-suite("negative residuals are not clipped", function () {
-   // Clipping would bias the residual upward everywhere the sub is darker
-   // than the master, which is half the noise, and that bias times the mask
-   // lifts the sky inside every mask.
-   var master = new Float32Array([0.2, 0.2, 0.2, 0.2]);
-   var sub = new Float32Array([0.1, 0.3, 0.1, 0.3]);
-   var fit = { scale: 1, offset: 0, samples: 4 };
-   var res = comp.residual(master, sub, fit);
-   // Float32 carries about seven decimal digits, so the tolerance has to
-   // allow for that rather than assert double precision.
-   close(res[0], -0.1, 1e-6, "a darker sample gives a negative residual");
-   close(res[1], 0.1, 1e-6, "a brighter one gives a positive residual");
+suite("two frames of one meteor do not erase each other", function () {
+   // The defect this replaces. The composite used to be accumulated: each
+   // frame was composited into the master and the next frame was fitted
+   // against the result. A meteor that crossed an exposure boundary appears in
+   // two consecutive frames as two adjacent stretches of one path, so the
+   // second frame's mask covers the first frame's trail - and the second frame
+   // has no meteor there. Its residual was therefore the first frame's light
+   // with a minus sign, and with a fit scale of 1.1 that subtracted more than
+   // had been added. The trail came out with a black gouge along it.
+   //
+   // Here the two masks overlap completely, which is the worst case.
+   var W = 120, H = 40;
+   var n = W * H;
+   var master = makeMaster(n, 71);
+   var subA = makeSub(master, 1.1, 0.002, 0, 73);
+   var subB = makeSub(master, 1.1, 0.002, 0, 79);
 
-   var sum = 0;
-   for (var i = 0; i < res.length; ++i) {
-      sum += res[i];
+   var mask = new Float32Array(n);
+   var x, y, i;
+   for (y = 18; y <= 22; ++y) {
+      for (x = 20; x < 100; ++x) {
+         mask[y * W + x] = 1;
+      }
    }
-   close(sum, 0, 1e-6, "so symmetric noise cancels rather than accumulating");
+   var rect = { left: 20, top: 18, right: 99, bottom: 22 };
+
+   // Frame A carries the first half of the trail, frame B the second half.
+   for (y = 19; y <= 21; ++y) {
+      for (x = 20; x < 60; ++x) {
+         subA[y * W + x] += 0.3;
+      }
+      for (x = 60; x < 100; ++x) {
+         subB[y * W + x] += 0.2;
+      }
+   }
+
+   var added = new Float32Array(n);
+   var fitA = comp.fitOnGrid(master, subA, mask, W, H, null);
+   var fitB = comp.fitOnGrid(master, subB, mask, W, H, null);
+
+   // Both frames are fitted against the SAME master and write into the same
+   // accumulator, in the order the composite would run them.
+   comp.addTrailLight(master, subA, fitA, mask, W, rect, { level: 0 }, added);
+   comp.addTrailLight(master, subB, fitB, mask, W, rect, { level: 0 }, added);
+
+   var first = 20 * W + 40;
+   var second = 20 * W + 80;
+   close(added[first], 0.3, 5e-3, "frame A's light survives frame B");
+   close(added[second], 0.2, 5e-3, "and frame B's light is there too");
+
+   var dug = 0;
+   for (i = 0; i < n; ++i) {
+      if (added[i] < 0) {
+         ++dug;
+      }
+   }
+   ok(dug === 0, "and nothing anywhere was dug out");
+});
+
+suite("composeFrame writes nothing when a fit is implausible", function () {
+   // A frame that does not match the master must leave no trace at all.
+   // Writing two channels and rejecting on the third would produce a colour
+   // cast that reads as a mask bug.
+   var W = 200, H = 150;
+   var n = W * H;
+   var masterChannels = [makeMaster(n, 81), makeMaster(n, 83), makeMaster(n, 85)];
+   var subChannels = [
+      makeSub(masterChannels[0], 1.2, 0.001, 0, 91),
+      makeSub(masterChannels[1], 1.2, 0.001, 0, 93),
+      // The third channel is unrelated to its master: a near-zero slope, which
+      // is what the one rejected frame of the real night looked like.
+      makeSub(masterChannels[2], 0.02, 0.008, 0, 95)
+   ];
+
+   var mask = new Float32Array(n);
+   var rect = { left: 80, top: 70, right: 120, bottom: 80 };
+   var x, y, ch;
+   for (y = rect.top; y <= rect.bottom; ++y) {
+      for (x = rect.left; x <= rect.right; ++x) {
+         mask[y * W + x] = 1;
+      }
+   }
+
+   var added = [new Float32Array(n), new Float32Array(n), new Float32Array(n)];
+   var result = comp.composeFrame(masterChannels, subChannels, mask, W, H,
+                                  [rect], added, null);
+
+   ok(!result.written, "the frame was refused");
+   ok(result.reason !== null && result.reason.indexOf("scale") >= 0,
+      "and the reason names the scale: " + result.reason);
+   ok(result.channel === 2, "on the channel that failed");
+
+   var touched = 0;
+   for (ch = 0; ch < 3; ++ch) {
+      for (var i = 0; i < n; ++i) {
+         if (added[ch][i] !== 0) {
+            ++touched;
+         }
+      }
+   }
+   ok(touched === 0, "and not one sample was written in any channel");
+});
+
+suite("end to end with a real trail mask", function () {
+   // The mask comes from trail_mask rather than being written by hand, so the
+   // two modules are exercised together in the shape the pipeline uses.
+   var W = 200, H = 120;
+   var n = W * H;
+   var master = makeMaster(n, 41);
+   var sub = makeSub(master, 1.3, 0.004, 0.002, 43);
+
+   var trail = { x0: 40, y0: 60, x1: 160, y1: 60, width: 3 };
+   var field = trailMask.renderMask([trail], W, H, null);
+   var rect = trailMask.maskBounds(trail, W, H, null);
+
+   // Put a meteor into the sub exactly where the mask is solid.
+   var i;
+   for (i = 0; i < n; ++i) {
+      if (field.data[i] >= 1) {
+         sub[i] += 0.3;
+      }
+   }
+
+   var added = [new Float32Array(n)];
+   var result = comp.composeFrame([master], [sub], field.data, W, H,
+                                  [rect], added, null);
+   ok(result.written, "the frame was composited: " + (result.reason || "ok"));
+   close(result.fits[0].scale, 1.3, 0.05, "and the fit recovers the sub's scale");
+
+   var composite = comp.applyAdded(master, added[0]);
+
+   // On the trail's axis the full amplitude arrives.
+   var axis = 60 * W + 100;
+   close(composite[axis] - master[axis], 0.3, 0.01,
+         "the meteor arrives at full strength on the axis");
+
+   // Well away from it nothing changed at all.
+   var far = 10 * W + 10;
+   close(composite[far], master[far], 1e-9, "and the far sky is untouched");
+
+   // Nothing anywhere is darker than the master.
+   var darkened = 0;
+   var outsideChanged = 0;
+   for (i = 0; i < n; ++i) {
+      if (composite[i] < master[i]) {
+         ++darkened;
+      }
+      if (field.data[i] <= 0 && composite[i] !== master[i]) {
+         ++outsideChanged;
+      }
+   }
+   ok(darkened === 0, "no sample anywhere was darkened");
+   ok(outsideChanged === 0, "and outside the mask the master is reproduced exactly");
+
+   // Where the mask stops is the whole correction. The light was measured to
+   // reach 1 sigma at 5 px from the axis and a tenth of that by 20 px, so the
+   // core ends at 5 and nothing at all is added past 20.
+   close(field.data[(60 + 3) * W + 100], 1, 1e-9, "the core is solid at 3 px");
+   ok(field.data[(60 + 12) * W + 100] > 0 && field.data[(60 + 12) * W + 100] < 1,
+      "the feather is partial at 12 px");
+   close(field.data[(60 + 21) * W + 100], 0, 1e-9, "and there is no mask at 21 px");
+});
+
+suite("local background removal changes what is added", function () {
+   // With a local excess present, leaving it in means the mask paints it; the
+   // clip at zero makes that a one-sided error, so it can only ever add sky.
+   var W = 200, H = 120;
+   var n = W * H;
+   var master = makeMaster(n, 51);
+   var sub = makeSub(master, 1.15, 0.003, 0.0001, 53);
+
+   var trail = { x0: 60, y0: 60, x1: 140, y1: 60, width: 3 };
+   var field = trailMask.renderMask([trail], W, H, null);
+   var rect = trailMask.maskBounds(trail, W, H, null);
+
+   // A local excess covering the trail and its surroundings, and no meteor.
+   var LOCAL = 0.0008;
+   var x, y;
+   for (y = 20; y < 100; ++y) {
+      for (x = 20; x < 180; ++x) {
+         sub[y * W + x] += LOCAL;
+      }
+   }
+
+   var withRemoval = [new Float32Array(n)];
+   comp.composeFrame([master], [sub], field.data, W, H, [rect], withRemoval, null);
+   var without = [new Float32Array(n)];
+   comp.composeFrame([master], [sub], field.data, W, H, [rect], without,
+                     { removeLocalBackground: false });
+
+   var sumWith = 0, sumWithout = 0;
+   for (var i = 0; i < n; ++i) {
+      sumWith += withRemoval[0][i];
+      sumWithout += without[0][i];
+   }
+   ok(sumWithout > sumWith * 3,
+      "leaving the local sky in paints far more of it (" + sumWithout.toExponential(2)
+      + " against " + sumWith.toExponential(2) + ")");
+
+   // And with it removed, a frame with no meteor adds almost nothing: the
+   // remainder is the clipped half of the noise, not a level.
+   var meanWith = sumWith / trailMask.maskCoverage(field).touched;
+   ok(meanWith < LOCAL / 4,
+      "with it removed, next to nothing is added (" + meanWith.toExponential(2) + ")");
 });
 
 suite("fitIsPlausible", function () {
@@ -287,54 +505,10 @@ suite("fitIsPlausible", function () {
    ok(thin.reason.indexOf("samples") >= 0, "and says so");
 });
 
-suite("end to end with a real trail mask", function () {
-   // The mask comes from trail_mask rather than being written by hand, so the
-   // two modules are exercised together in the shape the pipeline uses.
-   var W = 200, H = 120;
-   var n = W * H;
-   var master = makeMaster(n, 41);
-   var sub = makeSub(master, 1.3, 0.004, 0.002, 43);
-
-   var field = trailMask.renderMask(
-      [{ x0: 40, y0: 60, x1: 160, y1: 60, width: 3 }], W, H,
-      { coreRadius: 4, coreScale: 0, featherWidth: 10, endExtension: 5 });
-
-   // Put a meteor into the sub exactly where the mask is solid.
-   var i;
-   for (i = 0; i < n; ++i) {
-      if (field.data[i] >= 1) {
-         sub[i] += 0.3;
-      }
-   }
-
-   var result = comp.composeChannel(master, sub, field.data, null);
-   var check = comp.fitIsPlausible(result.fit, null);
-   ok(check.ok, "the fit is plausible: " + (check.reason || "ok"));
-   close(result.fit.scale, 1.3, 0.05, "and recovers the sub's scale");
-
-   // On the trail's axis the full amplitude arrives.
-   var axis = 60 * W + 100;
-   close(result.data[axis] - master[axis], 0.3, 0.01,
-         "the meteor arrives at full strength on the axis");
-
-   // Well away from it nothing changed at all.
-   var far = 10 * W + 10;
-   close(result.data[far], master[far], 1e-6, "and the far sky is untouched");
-
-   // The composite never darkens the master where the meteor is: the whole
-   // point is adding light.
-   var darkened = 0;
-   for (i = 0; i < n; ++i) {
-      if (field.data[i] >= 1 && result.data[i] < master[i]) {
-         ++darkened;
-      }
-   }
-   ok(darkened === 0, "no solid-mask sample was darkened");
-});
-
 //----------------------------------------------------------------------------
 
 console.log("\n============================================");
+
 console.log("passed: " + passed + "  failed: " + failed);
 if (failed > 0) {
    console.log("\nFailures:");

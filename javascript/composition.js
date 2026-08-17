@@ -3,27 +3,74 @@
 //
 // Pure JavaScript, no PJSR dependency. Stage 4 of docs/requirements.md 7.3.
 //
-// The rule the whole stage rests on:
+// The rule:
 //
-//   residual = sub - fit(master -> sub)
-//   result   = master + residual * mask
+//   fit      = linear fit of master to sub, over the sky outside the masks
+//   light    = sub - fit(master) - localBackground        , clipped at zero
+//   result   = master + max over frames of ( light * mask )
 //
-// Not a lighten blend. A single sub-frame is far noisier than a master built
-// from hundreds of them, so taking the brighter of the two inside the mask
-// would take the sub's noise almost everywhere the meteor is not exactly, and
-// every meteor would sit in a visible patch of grain. Subtracting a fitted
-// master leaves only what the sub has that the master does not - the meteor -
-// and adds that. The background stays the master's.
+// Three properties of that formula were each paid for by a defect:
 //
-// The fit matters as much as the subtraction. A sub and a master differ in
-// exposure depth, sky brightness and transparency, so subtracting the master
-// raw would leave a constant offset that the mask would then paint into the
-// result as a rectangle of altered sky. A per-channel linear fit removes
-// exactly that.
+//   Clipped at zero, so the result can never come out darker than the master.
+//   This is the lighten blend an operator expects - "the meteor is laid on
+//   top" - and it is what the earlier signed version failed to be. The cost is
+//   a bias: half of the residual noise is positive and survives the clip,
+//   lifting the masked sky by sigma/sqrt(2*pi), about 0.4 sigma. Measured
+//   against this data that is 7e-5 against a master noise of 2.1e-4, so it
+//   sits at a third of the noise the master already has. That measurement is
+//   what makes the clip affordable; without it the mask edge would be traded
+//   for a mask-shaped step.
+//
+//   Minus a local background, because a single linear fit over 24 million
+//   pixels cannot follow a local difference in sky level between a sub and a
+//   master, and whatever it leaves behind is painted into the result in the
+//   shape of the mask. Measured per trail, that leftover reached 1.9e-4 -
+//   comparable with the master's own noise - and up to 3.2e-3 on the one frame
+//   whose fit is known to be broken. The clip hides it when it is negative and
+//   paints it when it is positive, so it has to be removed rather than
+//   tolerated.
+//
+//   Max over frames, and every frame fitted against the SAME pristine master.
+//   Accumulating instead - compositing one frame into the master and fitting
+//   the next against the result - digs a hole wherever two masks overlap: the
+//   second frame has no meteor where the first one's is, so its residual there
+//   is the first one's light with a minus sign, and with a fit scale of 1.1
+//   that subtracts more than was added. Meteors that cross an exposure
+//   boundary produce exactly that overlap, and they came out with a black
+//   gouge along the trail. Four overlapping pairs were measured in a single
+//   night's 31 accepted meteors, three of them within 10 pixels.
 //
 // Terminology is Composition, never Integration (requirements.md 7.3): this
 // selects light from one frame, it does not combine many statistically.
+//
+// Geometry lives in trail_mask.js. Everything here works on plain arrays plus
+// a rectangle, so that the two modules stay independent under #include, where
+// there is only one global scope.
 //============================================================================
+
+var DEFAULT_COMPOSE_OPTIONS = {
+   // Sample every nth pixel in each direction when fitting. Two coefficients
+   // do not need 24 million samples, and a stride of 7 still leaves close to
+   // half a million. Measured: the full-pixel fit took 3.8 s per frame against
+   // 1.1 s for the strided one, and both gave the same scale to three decimals.
+   fitStride: 7,
+
+   // Width of the ring outside the mask used to measure the local sky, in
+   // pixels. It has to be wide enough to average the noise down well below the
+   // level error it is measuring, and close enough that it is still the same
+   // sky. The trail's light is below a tenth of the noise by 20 px from the
+   // axis (measured), which is where the mask now ends, so the ring starts
+   // clear of the meteor.
+   ringWidth: 24,
+
+   // Stride within the ring. The ring holds tens of thousands of pixels and
+   // the median of every other one is the same number.
+   ringStride: 2,
+
+   // Whether to remove the local sky level before adding. Off is the honest
+   // way to reproduce the earlier behaviour when comparing.
+   removeLocalBackground: true
+};
 
 // Fit `source` to `reference` as reference ~= scale * source + offset, by
 // least squares.
@@ -67,72 +114,174 @@ function linearFit(source, reference) {
    return { scale: scale, offset: meanY - scale * meanX, samples: n };
 }
 
-// Fit the master to the sub over the region that will be composited, but
-// EXCLUDING the trail itself.
+// Fit the master to the sub over the whole frame, on a strided grid, skipping
+// everything the masks cover.
 //
-// Including it would be self-defeating: the fit would partly absorb the
-// meteor, and the residual - which is the meteor - would come out smaller
-// than it is. `mask` marks the trail; samples where it is above
-// `excludeAbove` are left out of the fit and the surrounding sky decides the
-// relationship.
-function fitMasterToSub(master, sub, mask, excludeAbove) {
-   var threshold = excludeAbove === undefined ? 0 : excludeAbove;
+// The masks have to be skipped: a fit that included the trail would partly
+// absorb the meteor, and the light that is then added - which is what is left
+// over - would come out smaller than it is.
+function fitOnGrid(master, sub, mask, width, height, options) {
+   var opt = mergeComposeOptions(options);
+   var stride = opt.fitStride > 0 ? Math.floor(opt.fitStride) : 1;
    var x = [], y = [];
-   for (var i = 0; i < mask.length; ++i) {
-      if (mask[i] > threshold) {
-         continue;
+   for (var iy = 0; iy < height; iy += stride) {
+      var row = iy * width;
+      for (var ix = 0; ix < width; ix += stride) {
+         var i = row + ix;
+         if (mask[i] > 0) {
+            continue;
+         }
+         x.push(master[i]);
+         y.push(sub[i]);
       }
-      x.push(master[i]);
-      y.push(sub[i]);
    }
    return linearFit(x, y);
 }
 
-// The light the sub has that the fitted master does not.
+// The sky level the fit failed to match, measured just outside one trail's
+// mask.
 //
-// Negative values are kept rather than clipped. Clipping here would bias the
-// residual upward everywhere the sub happens to be darker than the master -
-// which is half of the noise - and that bias, multiplied by the mask and
-// added, would lift the sky inside every mask by a visible amount.
-function residual(master, sub, fit) {
-   var out = new Float32Array(master.length);
-   for (var i = 0; i < master.length; ++i) {
-      out[i] = sub[i] - (fit.scale * master[i] + fit.offset);
-   }
-   return out;
-}
+// Only unmasked pixels take part, which is the point: they are pixels the
+// composite will not touch, so they say what the residual is where there is
+// certainly no meteor. The median rather than the mean, so that a star or a
+// second trail clipping the corner of the rectangle does not move it.
+function localBackground(master, sub, fit, mask, width, height, rect, options) {
+   var opt = mergeComposeOptions(options);
+   var ring = Math.max(0, Math.floor(opt.ringWidth));
+   var stride = opt.ringStride > 0 ? Math.floor(opt.ringStride) : 1;
 
-// master + residual * mask.
-function composite(master, residualData, mask) {
-   var out = new Float32Array(master.length);
-   for (var i = 0; i < master.length; ++i) {
-      out[i] = master[i] + residualData[i] * mask[i];
-   }
-   return out;
-}
+   var left = Math.max(0, rect.left - ring);
+   var right = Math.min(width - 1, rect.right + ring);
+   var top = Math.max(0, rect.top - ring);
+   var bottom = Math.min(height - 1, rect.bottom + ring);
 
-// The whole of Stage 4 for one channel of one sub-frame.
-//
-// Returns the composited channel plus what was done to get there, because a
-// fit whose scale is nowhere near 1 means the two frames were not comparable
-// and the result should not be trusted silently.
-function composeChannel(master, sub, mask, options) {
-   var opt = options || {};
-   var fit = fitMasterToSub(master, sub, mask,
-                            opt.fitExcludeAbove === undefined ? 0 : opt.fitExcludeAbove);
-   var res = residual(master, sub, fit);
-   var out = composite(master, res, mask);
-
-   var peak = 0;
-   var addedEnergy = 0;
-   for (var i = 0; i < mask.length; ++i) {
-      var added = res[i] * mask[i];
-      addedEnergy += added;
-      if (added > peak) {
-         peak = added;
+   var values = [];
+   for (var y = top; y <= bottom; y += stride) {
+      var row = y * width;
+      for (var x = left; x <= right; x += stride) {
+         var i = row + x;
+         if (mask[i] > 0) {
+            continue;
+         }
+         var v = sub[i] - (fit.scale * master[i] + fit.offset);
+         if (isFinite(v)) {
+            values.push(v);
+         }
       }
    }
-   return { data: out, fit: fit, peakAdded: peak, addedEnergy: addedEnergy };
+   if (values.length === 0) {
+      return { level: 0, sigma: 0, samples: 0 };
+   }
+   values.sort(function (a, b) { return a - b; });
+   var level = medianOfSorted(values);
+
+   // Noise as a robust deviation, so that the numbers reported alongside the
+   // level are not themselves set by a star in the corner.
+   var deviations = [];
+   for (var k = 0; k < values.length; ++k) {
+      deviations.push(Math.abs(values[k] - level));
+   }
+   deviations.sort(function (a, b) { return a - b; });
+   return {
+      level: level,
+      sigma: 1.4826 * medianOfSorted(deviations),
+      samples: values.length
+   };
+}
+
+// Add one trail's light into `added`, which accumulates over every trail of
+// every frame.
+//
+// Nothing negative is ever written, so the composite cannot come out darker
+// than the master anywhere. Contributions combine with max rather than by
+// summing: where two frames of one meteor overlap, the brighter of the two is
+// the meteor, whereas their sum would count the crossing twice.
+function addTrailLight(master, sub, fit, mask, width, rect, background, added) {
+   var level = background ? background.level : 0;
+   var peak = 0;
+   var energy = 0;
+   var pixels = 0;
+
+   for (var y = rect.top; y <= rect.bottom; ++y) {
+      var row = y * width;
+      for (var x = rect.left; x <= rect.right; ++x) {
+         var i = row + x;
+         var m = mask[i];
+         if (m <= 0) {
+            continue;
+         }
+         var v = sub[i] - (fit.scale * master[i] + fit.offset) - level;
+         if (!(v > 0)) {
+            continue;
+         }
+         var a = v * m;
+         if (a > added[i]) {
+            energy += a - added[i];
+            added[i] = a;
+            ++pixels;
+            if (a > peak) {
+               peak = a;
+            }
+         }
+      }
+   }
+   return { peak: peak, energy: energy, pixels: pixels };
+}
+
+// Everything Stage 4 does for one frame, given plain arrays.
+//
+// `rects` are the masked rectangles, one per trail, as trail_mask's maskBounds
+// returns them. `added` is the accumulator, one array per channel, shared
+// across every frame in the composite.
+//
+// The fits for every channel are computed and checked BEFORE anything is
+// written. A frame that does not match the master must leave no trace at all:
+// writing two channels and then rejecting the third would produce a colour
+// cast that looks like a bug in the mask.
+function composeFrame(masterChannels, subChannels, mask, width, height,
+                     rects, added, options) {
+   var channels = masterChannels.length;
+   var fits = [];
+   var ch;
+
+   for (ch = 0; ch < channels; ++ch) {
+      fits.push(fitOnGrid(masterChannels[ch], subChannels[ch], mask,
+                          width, height, options));
+      var check = fitIsPlausible(fits[ch], options);
+      if (!check.ok) {
+         return { written: false, fits: fits, reason: check.reason,
+                  channel: ch, trails: [] };
+      }
+   }
+
+   var opt = mergeComposeOptions(options);
+   var report = [];
+   for (var t = 0; t < rects.length; ++t) {
+      var perChannel = [];
+      for (ch = 0; ch < channels; ++ch) {
+         var background = opt.removeLocalBackground
+            ? localBackground(masterChannels[ch], subChannels[ch], fits[ch],
+                              mask, width, height, rects[t], options)
+            : { level: 0, sigma: 0, samples: 0 };
+         var outcome = addTrailLight(masterChannels[ch], subChannels[ch], fits[ch],
+                                     mask, width, rects[t], background, added[ch]);
+         perChannel.push({ background: background, peak: outcome.peak,
+                           energy: outcome.energy, pixels: outcome.pixels });
+      }
+      report.push(perChannel);
+   }
+
+   return { written: true, fits: fits, reason: null, channel: -1, trails: report };
+}
+
+// master + added. A separate step because the accumulator is finished only
+// once every frame has contributed.
+function applyAdded(master, added) {
+   var out = new Float32Array(master.length);
+   for (var i = 0; i < master.length; ++i) {
+      out[i] = master[i] + added[i];
+   }
+   return out;
 }
 
 // Whether a fit looks trustworthy.
@@ -160,15 +309,45 @@ function fitIsPlausible(fit, options) {
    return { ok: true, reason: null };
 }
 
+// --- Utility ----------------------------------------------------------------
+
+function medianOfSorted(sorted) {
+   if (sorted.length === 0) {
+      return 0;
+   }
+   var mid = sorted.length >> 1;
+   return sorted.length % 2 ? sorted[mid] : (sorted[mid - 1] + sorted[mid]) / 2;
+}
+
+function mergeComposeOptions(options) {
+   if (options && options.__composeMerged) {
+      return options;
+   }
+   var out = { __composeMerged: true };
+   for (var k in DEFAULT_COMPOSE_OPTIONS) {
+      out[k] = DEFAULT_COMPOSE_OPTIONS[k];
+   }
+   if (options) {
+      for (var j in options) {
+         if (options[j] !== undefined) {
+            out[j] = options[j];
+         }
+      }
+   }
+   return out;
+}
+
 // --- Exports ---------------------------------------------------------------
 
 if (typeof module !== "undefined") {
    module.exports = {
+      DEFAULT_COMPOSE_OPTIONS: DEFAULT_COMPOSE_OPTIONS,
       linearFit: linearFit,
-      fitMasterToSub: fitMasterToSub,
-      residual: residual,
-      composite: composite,
-      composeChannel: composeChannel,
+      fitOnGrid: fitOnGrid,
+      localBackground: localBackground,
+      addTrailLight: addTrailLight,
+      composeFrame: composeFrame,
+      applyAdded: applyAdded,
       fitIsPlausible: fitIsPlausible
    };
 }

@@ -2345,10 +2345,24 @@ var MeteorComposerDialog = class extends Dialog {
          channels = masterImage.numberOfChannels;
 
          var output = new Image(masterImage);
-         var working = [];
+
+         // The master is read once and never written to. Every frame is fitted
+         // against this pristine copy, and the light each one contributes goes
+         // into a separate accumulator.
+         //
+         // Compositing into the master as it went - which is what this did
+         // first - breaks a meteor that crossed an exposure boundary. Its two
+         // frames are adjacent stretches of one path, so the second frame's
+         // mask covers the first frame's trail, and the second frame has no
+         // meteor there: its residual is the first frame's light with a minus
+         // sign, and a fit scale above 1 subtracts more than was added. The
+         // trail came out with a black gouge along it.
+         var masterChannels = [];
+         var added = [];
          var ch;
          for (ch = 0; ch < channels; ++ch) {
-            working.push(channelToArray(masterImage, ch));
+            masterChannels.push(channelToArray(masterImage, ch));
+            added.push(new Float32Array(W * H));
          }
 
          var combinedMask = new Float32Array(W * H);
@@ -2360,6 +2374,12 @@ var MeteorComposerDialog = class extends Dialog {
             CoreApplication.processEvents();
 
             var maskField = renderMask(job.trails, W, H, null);
+            // One rectangle per trail, so that the local sky is measured
+            // around each trail rather than once for the frame.
+            var rects = [];
+            for (var ti = 0; ti < job.trails.length; ++ti) {
+               rects.push(maskBounds(job.trails[ti], W, H, null));
+            }
 
             var subWindow = null;
             try {
@@ -2384,29 +2404,22 @@ var MeteorComposerDialog = class extends Dialog {
                   continue;
                }
 
-               var channelResults = [];
-               var frameOk = true;
+               var subChannels = [];
                for (ch = 0; ch < channels; ++ch) {
-                  var outcome = composeChannel(working[ch],
-                                               channelToArray(subImage, ch),
-                                               maskField.data, null);
-                  var plausible = fitIsPlausible(outcome.fit, null);
-                  if (!plausible.ok) {
-                     // Compositing a frame that does not match the master
-                     // produces a result that looks plausible and is wrong,
-                     // so the frame is left out and the operator is told.
-                     skipped.push(job.file + ": " + plausible.reason);
-                     frameOk = false;
-                     break;
-                  }
-                  channelResults.push(outcome.data);
+                  subChannels.push(channelToArray(subImage, ch));
                }
-               if (!frameOk) {
+
+               var outcome = composeFrame(masterChannels, subChannels,
+                                          maskField.data, W, H, rects, added, null);
+               if (!outcome.written) {
+                  // Compositing a frame that does not match the master
+                  // produces a result that looks plausible and is wrong, so
+                  // the frame is left out and the operator is told. Nothing
+                  // was written for any channel.
+                  skipped.push(job.file + ": " + outcome.reason);
                   continue;
                }
-               for (ch = 0; ch < channels; ++ch) {
-                  working[ch] = channelResults[ch];
-               }
+
                for (var m = 0; m < maskField.data.length; ++m) {
                   if (maskField.data[m] > combinedMask[m]) {
                      combinedMask[m] = maskField.data[m];
@@ -2419,7 +2432,7 @@ var MeteorComposerDialog = class extends Dialog {
          }
 
          for (ch = 0; ch < channels; ++ch) {
-            arrayToChannel(output, ch, working[ch]);
+            arrayToChannel(output, ch, applyAdded(masterChannels[ch], added[ch]));
          }
 
          var outWindow = new ImageWindow(W, H, channels, masterImage.bitsPerSample,

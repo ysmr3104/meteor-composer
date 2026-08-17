@@ -7,8 +7,8 @@
 // that the accepted sub-frames have and the master does not, inside a
 // feathered mask around each trail.
 //
-//   residual = sub - fit(master -> sub)
-//   result   = master + residual * mask
+//   light  = sub - fit(master -> sub) - localBackground , clipped at zero
+//   result = master + max over frames of ( light * mask )
 //
 // The arithmetic lives in composition.js and trail_mask.js, both pure
 // JavaScript with Small tests. What is here is the part that has to touch
@@ -45,12 +45,11 @@ var SCREEN_FACTOR = 8;
 // 0 means all of them.
 var LIMIT = 0;
 
-var MASK_OPTIONS = {
-   coreRadius: 8,
-   coreScale: 2.5,
-   featherWidth: 32,
-   endExtension: 16
-};
+// The measured defaults from trail_mask.js. The first run of this probe
+// overrode them with a mask that reached 53 px from the axis, six times the
+// distance the light was later measured to travel; see
+// tests/pjsr/probe_trail_profile.js and docs/requirements.md 7.1.10.
+var MASK_OPTIONS = null;
 
 var _log = [];
 var _logPath = null;
@@ -238,12 +237,22 @@ function main() {
    log("  " + W + "x" + H + " x" + channels + "ch");
 
    // The composite is built in this copy: the master itself must not be
-   // modified in place, and each channel is written back as it is finished.
+   // modified in place.
    var output = new Image(masterImage);
 
+   // The master is read once and never written to, and every frame is fitted
+   // against this pristine copy. The light each frame contributes goes into a
+   // separate accumulator and is applied at the end.
+   //
+   // Compositing into the master as it went - which is what this did first -
+   // broke every meteor that crossed an exposure boundary: the second frame's
+   // mask covers the first frame's trail, the second frame has no meteor
+   // there, so its residual was the first frame's light with a minus sign.
    var masterChannels = [];
+   var added = [];
    for (var ch = 0; ch < channels; ++ch) {
       masterChannels.push(channelToArray(masterImage, ch));
+      added.push(new Float32Array(W * H));
    }
    log("  master channels read");
 
@@ -262,6 +271,12 @@ function main() {
 
       var maskField = renderMask(job.trails, W, H, MASK_OPTIONS);
       var coverage = maskCoverage(maskField);
+      // One rectangle per trail: the local sky is measured around each trail,
+      // not once for the frame.
+      var rects = [];
+      for (var ri = 0; ri < job.trails.length; ++ri) {
+         rects.push(maskBounds(job.trails[ri], W, H, MASK_OPTIONS));
+      }
 
       var subWindow = null;
       try {
@@ -287,27 +302,26 @@ function main() {
             continue;
          }
 
-         var frameOk = true;
-         var report = [];
+         var subChannels = [];
          for (var c2 = 0; c2 < channels; ++c2) {
-            var subChannel = channelToArray(subImage, c2);
-            var outcome = composeChannel(masterChannels[c2], subChannel,
-                                         maskField.data, null);
-            var plausible = fitIsPlausible(outcome.fit, null);
-            if (!plausible.ok) {
-               log("  [SKIP] " + job.file + " channel " + c2 + ": " + plausible.reason);
-               frameOk = false;
-               break;
-            }
-            report.push("ch" + c2 + " scale=" + outcome.fit.scale.toFixed(3)
-                        + " peak=" + outcome.peakAdded.toFixed(4));
-            // The composite accumulates: each frame adds its own meteor to
-            // what is already there, so a later frame sees the earlier ones.
-            masterChannels[c2] = outcome.data;
+            subChannels.push(channelToArray(subImage, c2));
          }
-         if (!frameOk) {
+
+         var outcome = composeFrame(masterChannels, subChannels, maskField.data,
+                                    W, H, rects, added, null);
+         if (!outcome.written) {
+            log("  [SKIP] " + job.file + " channel " + outcome.channel
+                + ": " + outcome.reason);
             ++skipped;
             continue;
+         }
+
+         var report = [];
+         for (var c3 = 0; c3 < channels; ++c3) {
+            var trailReport = outcome.trails[0][c3];
+            report.push("ch" + c3 + " scale=" + outcome.fits[c3].scale.toFixed(3)
+                        + " bg=" + trailReport.background.level.toExponential(2)
+                        + " peak=" + trailReport.peak.toFixed(4));
          }
 
          for (var m = 0; m < maskField.data.length; ++m) {
@@ -342,8 +356,8 @@ function main() {
        + totalCoverage.solid + " solid)");
 
    try {
-      for (var c3 = 0; c3 < channels; ++c3) {
-         arrayToChannel(output, c3, masterChannels[c3]);
+      for (var c4 = 0; c4 < channels; ++c4) {
+         arrayToChannel(output, c4, applyAdded(masterChannels[c4], added[c4]));
       }
       var outWindow = new ImageWindow(W, H, channels,
                                       masterImage.bitsPerSample,
