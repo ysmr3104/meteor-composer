@@ -47,6 +47,75 @@ function sampleSpanToImage(n0, n1, scale) {
    return { start: n0 * scale, end: (n1 + 1) * scale - 1 };
 }
 
+// --- Display rotation -------------------------------------------------------
+//
+// The preview can be turned in quarter steps so that portrait framing is
+// comfortable to work with. Rotation is display-only: candidate coordinates,
+// the ground truth and everything written to disk stay in image space.
+//
+// Bitmap.rotated() takes DEGREES and turns CLOCKWISE for a positive angle.
+// That is measured, not assumed - the reference documents no semantics and no
+// script shipped with PixInsight calls the method. tests/pjsr/probe_rotation.js
+// rotated a 40x20 bitmap with a marker at (2,1) by 90 and got a 20x40 bitmap
+// with the marker at (18,2), which is exactly (x,y) -> (H-1-y, x).
+//
+// Passing radians is not an error that announces itself: Math.PI/2 is read as
+// 1.57 degrees, so the image comes back very slightly tilted and slightly
+// larger (41x22 in the probe) rather than turned.
+
+function normalizeRotation(rotation) {
+   var r = rotation % 360;
+   if (r < 0) {
+      r += 360;
+   }
+   return r;
+}
+
+// Dimensions after rotation. Quarter turns swap them exactly; the probe
+// confirmed 6024x4024 becomes 4024x6024 with no canvas growth.
+function rotatedSize(width, height, rotation) {
+   var r = normalizeRotation(rotation);
+   if (r === 90 || r === 270) {
+      return { width: height, height: width };
+   }
+   return { width: width, height: height };
+}
+
+// Image pixel -> rotated display pixel.
+function imageToDisplay(x, y, rotation, imageWidth, imageHeight) {
+   switch (normalizeRotation(rotation)) {
+      case 90:  return { x: imageHeight - 1 - y, y: x };
+      case 180: return { x: imageWidth - 1 - x, y: imageHeight - 1 - y };
+      case 270: return { x: y, y: imageWidth - 1 - x };
+      default:  return { x: x, y: y };
+   }
+}
+
+// Rotated display pixel -> image pixel. Needed for hit testing: the click
+// arrives in display space and the candidates live in image space.
+function displayToImage(dx, dy, rotation, imageWidth, imageHeight) {
+   switch (normalizeRotation(rotation)) {
+      case 90:  return { x: dy, y: imageHeight - 1 - dx };
+      case 180: return { x: imageWidth - 1 - dx, y: imageHeight - 1 - dy };
+      case 270: return { x: imageWidth - 1 - dy, y: dx };
+      default:  return { x: dx, y: dy };
+   }
+}
+
+// An axis-aligned box stays axis-aligned under a quarter turn, but its
+// corners change roles, so the result has to be re-normalised: rotating
+// (left, top) by 90 produces the box's top-right, not its top-left.
+function rotateBox(box, rotation, imageWidth, imageHeight) {
+   var a = imageToDisplay(box.left, box.top, rotation, imageWidth, imageHeight);
+   var b = imageToDisplay(box.right, box.bottom, rotation, imageWidth, imageHeight);
+   return {
+      left: Math.min(a.x, b.x),
+      top: Math.min(a.y, b.y),
+      right: Math.max(a.x, b.x),
+      bottom: Math.max(a.y, b.y)
+   };
+}
+
 // --- image <-> view ---------------------------------------------------------
 
 function imageToView(x, y, zoom, scrollX, scrollY) {
@@ -168,7 +237,8 @@ function labelAnchor(box, labelWidth, labelHeight, imageWidth, imageHeight, gap)
 // --- Hit testing ------------------------------------------------------------
 
 // Which candidate did the user click on? Returns an index into `candidates`,
-// or -1.
+// or -1. Coordinates are in IMAGE space; a rotated preview must convert the
+// click with displayToImage() first.
 //
 // When boxes overlap, the smallest wins. A large box that happens to enclose
 // a small one would otherwise make the small one unclickable, and the small
@@ -207,10 +277,17 @@ function layoutOverlay(candidates, scaleX, scaleY, view, options) {
    var imageWidth = opt.imageWidth === undefined ? Infinity : opt.imageWidth;
    var imageHeight = opt.imageHeight === undefined ? Infinity : opt.imageHeight;
    var margin = opt.margin === undefined ? 24 : opt.margin;
+   var rotation = opt.rotation === undefined ? 0 : opt.rotation;
+
+   // Label placement and culling happen in display space, which is what the
+   // viewport actually shows; under a quarter turn the image's width and
+   // height swap.
+   var displaySize = rotatedSize(imageWidth, imageHeight, rotation);
 
    var out = [];
    for (var i = 0; i < candidates.length; ++i) {
-      var box = candidateBox(candidates[i], scaleX, scaleY, pad);
+      var box = rotateBox(candidateBox(candidates[i], scaleX, scaleY, pad),
+                          rotation, imageWidth, imageHeight);
 
       var tl = imageToView(box.left, box.top, view.zoom, view.scrollX, view.scrollY);
       var br = imageToView(box.right, box.bottom, view.zoom, view.scrollX, view.scrollY);
@@ -226,7 +303,8 @@ function layoutOverlay(candidates, scaleX, scaleY, view, options) {
       var labelImageW = labelSize.width / view.zoom;
       var labelImageH = labelSize.height / view.zoom;
       var anchor = labelAnchor(box, labelImageW, labelImageH,
-                               imageWidth, imageHeight, 4 / view.zoom);
+                               displaySize.width, displaySize.height,
+                               4 / view.zoom);
       var labelView = imageToView(anchor.x, anchor.y,
                                   view.zoom, view.scrollX, view.scrollY);
 
@@ -246,6 +324,11 @@ if (typeof module !== "undefined") {
       sampleCentreToImage: sampleCentreToImage,
       imageToSampleCentre: imageToSampleCentre,
       sampleSpanToImage: sampleSpanToImage,
+      normalizeRotation: normalizeRotation,
+      rotatedSize: rotatedSize,
+      imageToDisplay: imageToDisplay,
+      displayToImage: displayToImage,
+      rotateBox: rotateBox,
       imageToView: imageToView,
       viewToImage: viewToImage,
       candidateBounds: candidateBounds,

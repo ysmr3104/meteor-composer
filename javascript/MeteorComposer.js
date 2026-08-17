@@ -237,10 +237,13 @@ var MeteorPreviewControl = class extends ScrollBox {
    constructor(parent) {
       super(parent);
 
-      this.bitmap = null;
+      this.bitmap = null;         // as rendered, image orientation
+      this.displayBitmap = null;  // what is actually drawn; rotated copy
+      this.rotation = 0;          // 0 / 90 / 180 / 270, clockwise
       this.imageWidth = 0;
       this.imageHeight = 0;
       this.zoomLevel = 1.0;
+      this.onFrameRedrawn = null;
 
       this.candidates = [];
       this.verdicts = [];      // parallel to candidates
@@ -303,16 +306,17 @@ var MeteorPreviewControl = class extends ScrollBox {
          var g = new Graphics(this);
          try {
             g.fillRect(this.boundsRect, new Brush(0xFF202020));
-            if (self.bitmap === null) {
+            var bmp = self.displayBitmap;
+            if (bmp === null) {
                return;
             }
 
-            var dispW = Math.round(self.bitmap.width * self.zoomLevel);
-            var dispH = Math.round(self.bitmap.height * self.zoomLevel);
+            var dispW = Math.round(bmp.width * self.zoomLevel);
+            var dispH = Math.round(bmp.height * self.zoomLevel);
             g.drawScaledBitmap(
                new Rect(-self.scrollX, -self.scrollY,
                         dispW - self.scrollX, dispH - self.scrollY),
-               self.bitmap);
+               bmp);
 
             self.paintOverlay(g, this.width, this.height);
          } finally {
@@ -358,7 +362,12 @@ var MeteorPreviewControl = class extends ScrollBox {
             return;
          }
          if (!self.hasMoved && button === 1) {
-            var img = viewToImage(x, y, self.zoomLevel, self.scrollX, self.scrollY);
+            // The click arrives in view space; candidates live in image
+            // space. With the preview turned, that is two conversions, not
+            // one - view -> display -> image.
+            var disp = viewToImage(x, y, self.zoomLevel, self.scrollX, self.scrollY);
+            var img = displayToImage(disp.x, disp.y, self.rotation,
+                                     self.imageWidth, self.imageHeight);
             var hit = hitTest(self.candidates, img.x, img.y,
                               SCREEN_FACTOR, SCREEN_FACTOR, self.hitPadding());
             if (hit >= 0 && self.onCandidateClick !== null) {
@@ -440,7 +449,8 @@ var MeteorPreviewControl = class extends ScrollBox {
          pad: 2,
          labelSize: { width: 18, height: 13 },
          imageWidth: this.imageWidth,
-         imageHeight: this.imageHeight
+         imageHeight: this.imageHeight,
+         rotation: this.rotation
       });
 
       g.antialiasing = true;
@@ -467,10 +477,45 @@ var MeteorPreviewControl = class extends ScrollBox {
       this.bitmap = rendered === null ? null : rendered.bitmap;
       this.imageWidth = rendered === null ? 0 : rendered.width;
       this.imageHeight = rendered === null ? 0 : rendered.height;
+      this.rebuildDisplayBitmap();
       if (this._needsFit) {
          this.fitToWindow();
       } else {
          this.updateViewport();
+      }
+      if (this.onFrameRedrawn !== null) {
+         this.onFrameRedrawn();
+      }
+   }
+
+   // Bitmap.rotated() takes degrees and turns clockwise (measured; see
+   // preview_geometry.js). A quarter turn of a 6024x4024 frame was 35 ms, so
+   // rotating on every frame change is cheap enough that no rotated copy is
+   // cached beyond the frame on screen.
+   rebuildDisplayBitmap() {
+      if (this.bitmap === null) {
+         this.displayBitmap = null;
+         return;
+      }
+      this.displayBitmap = (normalizeRotation(this.rotation) === 0)
+         ? this.bitmap
+         : this.bitmap.rotated(normalizeRotation(this.rotation));
+   }
+
+   // The rotation is a property of the preview, not of the frame, so it
+   // survives moving to the next candidate.
+   setRotation(degrees) {
+      var previous = normalizeRotation(this.rotation);
+      this.rotation = normalizeRotation(degrees);
+      if (previous === this.rotation) {
+         return;
+      }
+      this.rebuildDisplayBitmap();
+      // Scroll position is meaningless across a turn; refit rather than
+      // leave the operator looking at a corner of the frame.
+      this.fitToWindow();
+      if (this.onFrameRedrawn !== null) {
+         this.onFrameRedrawn();
       }
    }
 
@@ -490,16 +535,18 @@ var MeteorPreviewControl = class extends ScrollBox {
    // Bring a candidate into view without changing the zoom. Used when the
    // operator moves through the list while zoomed in.
    centreOn(candidateIndex) {
-      if (this.bitmap === null || candidateIndex < 0
+      if (this.displayBitmap === null || candidateIndex < 0
           || candidateIndex >= this.candidates.length) {
          return;
       }
       var c = candidateCentroid(this.candidates[candidateIndex],
                                 SCREEN_FACTOR, SCREEN_FACTOR);
+      var d = imageToDisplay(c.x, c.y, this.rotation,
+                             this.imageWidth, this.imageHeight);
       var viewW = this.viewport.width;
       var viewH = this.viewport.height;
-      this.setScroll(c.x * this.zoomLevel - viewW / 2,
-                     c.y * this.zoomLevel - viewH / 2);
+      this.setScroll(d.x * this.zoomLevel - viewW / 2,
+                     d.y * this.zoomLevel - viewH / 2);
    }
 
    setScroll(x, y) {
@@ -511,14 +558,14 @@ var MeteorPreviewControl = class extends ScrollBox {
    }
 
    updateViewport() {
-      if (this.bitmap === null) {
+      if (this.displayBitmap === null) {
          this.setHorizontalScrollRange(0, 0);
          this.setVerticalScrollRange(0, 0);
          this.viewport.update();
          return;
       }
-      var dispW = Math.round(this.bitmap.width * this.zoomLevel);
-      var dispH = Math.round(this.bitmap.height * this.zoomLevel);
+      var dispW = Math.round(this.displayBitmap.width * this.zoomLevel);
+      var dispH = Math.round(this.displayBitmap.height * this.zoomLevel);
       var viewW = this.viewport.width > 0 ? this.viewport.width : this.width;
       var viewH = this.viewport.height > 0 ? this.viewport.height : this.height;
 
@@ -535,7 +582,7 @@ var MeteorPreviewControl = class extends ScrollBox {
    }
 
    fitToWindow() {
-      if (this.bitmap === null) {
+      if (this.displayBitmap === null) {
          return;
       }
       var viewW = this.viewport.width > 0 ? this.viewport.width : this.width;
@@ -543,7 +590,8 @@ var MeteorPreviewControl = class extends ScrollBox {
       if (viewW <= 0 || viewH <= 0) {
          return;
       }
-      this.zoomLevel = Math.min(viewW / this.bitmap.width, viewH / this.bitmap.height);
+      this.zoomLevel = Math.min(viewW / this.displayBitmap.width,
+                                viewH / this.displayBitmap.height);
       this.zoomIndex = this.nearestZoomIndex(this.zoomLevel);
       this.scrollX = 0;
       this.scrollY = 0;
@@ -565,7 +613,7 @@ var MeteorPreviewControl = class extends ScrollBox {
    }
 
    zoomAroundCentre(newZoom) {
-      if (this.bitmap === null || Math.abs(this.zoomLevel - newZoom) < 1e-9) {
+      if (this.displayBitmap === null || Math.abs(this.zoomLevel - newZoom) < 1e-9) {
          return;
       }
       var viewW = this.viewport.width > 0 ? this.viewport.width : this.width;
@@ -600,6 +648,189 @@ var MeteorPreviewControl = class extends ScrollBox {
             return;
          }
       }
+   }
+};
+
+//============================================================================
+// CandidateDetailControl
+//
+// A second view showing just the selected candidate, enlarged. At fit-to-
+// window a trail is a few pixels long on screen, which is not enough to tell
+// a meteor from a satellite, and zooming the main preview loses the context
+// of where the candidate sits in the frame. This pane gives the close look
+// while the main preview keeps the overview.
+//
+// It costs no memory: Graphics.drawScaledBitmapRect() takes a source
+// rectangle and a destination rectangle, so the crop is done at draw time
+// against the bitmap the preview already holds. Nothing is copied.
+//============================================================================
+
+var CandidateDetailControl = class extends Frame {
+   constructor(parent) {
+      super(parent);
+
+      this.bitmap = null;      // the rotated display bitmap, shared with the preview
+      this.box = null;         // selected candidate's box, in display coordinates
+      this.colour = COLOUR_SELECTED;
+      this.margin = 2.5;       // how much context around the box, as a multiple
+
+      var self = this;
+
+      this.onPaint = function () {
+         var g = new Graphics(self);
+         try {
+            g.fillRect(self.boundsRect, new Brush(0xFF181818));
+            if (self.bitmap === null || self.box === null) {
+               g.pen = new Pen(0xFF808080);
+               g.font = new Font("Helvetica", 11);
+               g.drawText(8, 20, "No candidate selected");
+               return;
+            }
+            var src = self.sourceRect();
+            if (src === null) {
+               return;
+            }
+            var dst = new Rect(0, 0, self.width, self.height);
+            g.drawScaledBitmapRect(dst, self.bitmap, src);
+
+            // Mark the candidate itself, so it is clear which part of this
+            // enlarged view is the detection and which is context.
+            var sx = self.width / (src.x1 - src.x0);
+            var sy = self.height / (src.y1 - src.y0);
+            g.pen = new Pen(self.colour, 1.5);
+            g.drawRect(new Rect(
+               Math.round((self.box.left - src.x0) * sx),
+               Math.round((self.box.top - src.y0) * sy),
+               Math.round((self.box.right - src.x0) * sx),
+               Math.round((self.box.bottom - src.y0) * sy)));
+         } finally {
+            g.end();
+         }
+      };
+   }
+
+   // The crop to enlarge: the candidate's box plus context, widened to the
+   // pane's aspect ratio so the image is not stretched, then clamped to the
+   // bitmap. Clamping is done by shifting rather than shrinking, so the
+   // magnification stays the same for a candidate near an edge.
+   sourceRect() {
+      if (this.bitmap === null || this.box === null
+          || this.width <= 0 || this.height <= 0) {
+         return null;
+      }
+      var cx = (this.box.left + this.box.right) / 2;
+      var cy = (this.box.top + this.box.bottom) / 2;
+      var w = Math.max(this.box.right - this.box.left, 1) * this.margin;
+      var h = Math.max(this.box.bottom - this.box.top, 1) * this.margin;
+
+      var aspect = this.width / this.height;
+      if (w / h < aspect) {
+         w = h * aspect;
+      } else {
+         h = w / aspect;
+      }
+      // Never enlarge past the frame itself.
+      if (w > this.bitmap.width) {
+         w = this.bitmap.width;
+         h = w / aspect;
+      }
+      if (h > this.bitmap.height) {
+         h = this.bitmap.height;
+         w = h * aspect;
+      }
+
+      var x0 = cx - w / 2;
+      var y0 = cy - h / 2;
+      if (x0 < 0) {
+         x0 = 0;
+      }
+      if (y0 < 0) {
+         y0 = 0;
+      }
+      if (x0 + w > this.bitmap.width) {
+         x0 = this.bitmap.width - w;
+      }
+      if (y0 + h > this.bitmap.height) {
+         y0 = this.bitmap.height - h;
+      }
+      return new Rect(Math.round(x0), Math.round(y0),
+                      Math.round(x0 + w), Math.round(y0 + h));
+   }
+
+   setSource(bitmap, box, colour) {
+      this.bitmap = bitmap;
+      this.box = box;
+      this.colour = colour === undefined ? COLOUR_SELECTED : colour;
+      this.update();
+   }
+
+   setMargin(margin) {
+      this.margin = Math.max(1.05, Math.min(20, margin));
+      this.update();
+   }
+};
+
+//============================================================================
+// SplitterHandle
+//
+// PJSR has no splitter class, so this is one: a narrow strip between two
+// panes that reports how far it has been dragged. The owner decides what to
+// do with the delta, which keeps this control free of any assumption about
+// which pane grows.
+//============================================================================
+
+var SplitterHandle = class extends Control {
+   constructor(parent, onDragged) {
+      super(parent);
+
+      this.setFixedWidth(7);
+      this.cursor = new Cursor(StdCursor.HorizontalSize);
+      this.toolTip = "<p>Drag to resize the panes.</p>";
+
+      var self = this;
+      this.dragging = false;
+      this.pressX = 0;
+
+      this.onPaint = function () {
+         var g = new Graphics(self);
+         try {
+            g.fillRect(self.boundsRect, new Brush(0xFF3A3A3A));
+            // A few dots down the middle, so the strip reads as a handle
+            // rather than as a gap in the layout.
+            g.pen = new Pen(0xFF808080);
+            var midX = Math.floor(self.width / 2);
+            var midY = Math.floor(self.height / 2);
+            for (var d = -12; d <= 12; d += 6) {
+               g.drawLine(midX, midY + d, midX, midY + d + 2);
+            }
+         } finally {
+            g.end();
+         }
+      };
+
+      this.onMousePress = function (x, y, button, buttonState, modifiers) {
+         if (button === 1) {
+            self.dragging = true;
+            self.pressX = x;
+         }
+      };
+
+      // The handle moves with the pane it resizes, so after applying a delta
+      // the next event's x lands back near pressX. That makes the drag
+      // self-correcting without tracking absolute screen coordinates.
+      this.onMouseMove = function (x, y, buttonState, modifiers) {
+         if (!self.dragging) {
+            return;
+         }
+         var delta = x - self.pressX;
+         if (delta !== 0 && onDragged) {
+            onDragged(delta);
+         }
+      };
+
+      this.onMouseRelease = function (x, y, button, buttonState, modifiers) {
+         self.dragging = false;
+      };
    }
 };
 
@@ -742,16 +973,46 @@ var MeteorComposerDialog = class extends Dialog {
       this.windowTitle = TITLE + " " + VERSION + "  -  "
                        + (mode === MODE.GROUND_TRUTH ? "Ground truth" : "Screening");
 
+      this.listWidth = 380;
+      this.detailWidth = 360;
+
       this.buildSourceSection();
       this.buildListSection();
       this.buildPreviewSection();
+      this.buildDetailSection();
       this.buildVerdictSection();
       this.buildButtonSection();
 
+      // PJSR has no splitter, so the panes on either side carry a fixed width
+      // and the preview in the middle takes whatever is left. Dragging a
+      // handle adjusts the neighbouring fixed width.
+      this.listPanel = new Control(this);
+      this.listPanel.sizer = this.listSizer;
+      this.listPanel.setFixedWidth(this.listWidth);
+
+      this.previewPanel = new Control(this);
+      this.previewPanel.sizer = this.previewSizer;
+
+      this.detailPanel = new Control(this);
+      this.detailPanel.sizer = this.detailSizer;
+      this.detailPanel.setFixedWidth(this.detailWidth);
+
+      this.listSplitter = new SplitterHandle(this, function (delta) {
+         self.setListWidth(self.listWidth + delta);
+      });
+      // Dragging the right-hand handle rightwards should shrink the detail
+      // pane, hence the inverted sign.
+      this.detailSplitter = new SplitterHandle(this, function (delta) {
+         self.setDetailWidth(self.detailWidth - delta);
+      });
+
       var split = new HorizontalSizer;
-      split.spacing = 6;
-      split.add(this.listSizer, 38);
-      split.add(this.previewSizer, 62);
+      split.spacing = 0;
+      split.add(this.listPanel);
+      split.add(this.listSplitter);
+      split.add(this.previewPanel, 100);
+      split.add(this.detailSplitter);
+      split.add(this.detailPanel);
 
       this.sizer = new VerticalSizer;
       this.sizer.margin = 8;
@@ -973,6 +1234,24 @@ var MeteorComposerDialog = class extends Dialog {
        + "cost about 445 ms of the ~1.2 s each frame takes, and registered "
        + "frames from one session are near-identical, so locking makes "
        + "stepping through the list noticeably quicker.</p>";
+      this.rotateLeftButton = new PushButton(this);
+      this.rotateLeftButton.text = "↶";
+      this.rotateLeftButton.toolTip =
+         "<p>Turn the preview a quarter turn anticlockwise. The rotation is a "
+       + "property of the view, not of the frame, so it stays as you move "
+       + "through the candidates.</p>";
+      this.rotateLeftButton.onClick = function () {
+         self.setRotation(self.preview.rotation - 90);
+      };
+
+      this.rotateRightButton = new PushButton(this);
+      this.rotateRightButton.text = "↷";
+      this.rotateRightButton.toolTip =
+         "<p>Turn the preview a quarter turn clockwise.</p>";
+      this.rotateRightButton.onClick = function () {
+         self.setRotation(self.preview.rotation + 90);
+      };
+
       this.lockSTFCheck.onCheck = function (checked) {
          self.cache.lockSTF = checked;
          if (!checked) {
@@ -991,6 +1270,9 @@ var MeteorComposerDialog = class extends Dialog {
       toolbar.add(this.zoom11Button);
       toolbar.add(this.zoomInButton);
       toolbar.add(this.zoomOutButton);
+      toolbar.addSpacing(8);
+      toolbar.add(this.rotateLeftButton);
+      toolbar.add(this.rotateRightButton);
       toolbar.addSpacing(10);
       toolbar.add(this.lockSTFCheck);
       toolbar.addSpacing(10);
@@ -1000,6 +1282,79 @@ var MeteorComposerDialog = class extends Dialog {
       this.previewSizer.spacing = 4;
       this.previewSizer.add(toolbar);
       this.previewSizer.add(this.preview, 100);
+
+      // Whenever the preview redraws its frame - a new frame, or a turn - the
+      // detail pane is looking at a different bitmap and has to follow.
+      this.preview.onFrameRedrawn = function () {
+         self.updateDetail();
+      };
+   }
+
+   buildDetailSection() {
+      var self = this;
+
+      this.detail = new CandidateDetailControl(this);
+      this.detail.setScaledMinSize(220, 220);
+
+      this.detailLabel = new Label(this);
+      this.detailLabel.text = "Selected candidate";
+
+      this.detailInButton = new PushButton(this);
+      this.detailInButton.text = "+";
+      this.detailInButton.onClick = function () {
+         self.detail.setMargin(self.detail.margin / 1.4);
+      };
+
+      this.detailOutButton = new PushButton(this);
+      this.detailOutButton.text = "-";
+      this.detailOutButton.onClick = function () {
+         self.detail.setMargin(self.detail.margin * 1.4);
+      };
+
+      var toolbar = new HorizontalSizer;
+      toolbar.spacing = 4;
+      toolbar.add(this.detailLabel, 100);
+      toolbar.add(this.detailInButton);
+      toolbar.add(this.detailOutButton);
+
+      this.detailSizer = new VerticalSizer;
+      this.detailSizer.spacing = 4;
+      this.detailSizer.add(toolbar);
+      this.detailSizer.add(this.detail, 100);
+   }
+
+   setListWidth(width) {
+      this.listWidth = Math.max(220, Math.min(900, Math.round(width)));
+      this.listPanel.setFixedWidth(this.listWidth);
+   }
+
+   setDetailWidth(width) {
+      this.detailWidth = Math.max(180, Math.min(900, Math.round(width)));
+      this.detailPanel.setFixedWidth(this.detailWidth);
+   }
+
+   setRotation(degrees) {
+      this.preview.setRotation(degrees);
+      this.preview.centreOn(this.preview.selectedIndex);
+   }
+
+   // Point the detail pane at the selected candidate. The box is computed in
+   // display coordinates, because that is the space the rotated bitmap the
+   // pane draws from is in.
+   updateDetail() {
+      var index = this.preview.selectedIndex;
+      if (this.preview.displayBitmap === null || index < 0
+          || index >= this.preview.candidates.length) {
+         this.detail.setSource(null, null);
+         return;
+      }
+      var box = rotateBox(
+         candidateBox(this.preview.candidates[index],
+                      SCREEN_FACTOR, SCREEN_FACTOR, 2),
+         this.preview.rotation, this.preview.imageWidth, this.preview.imageHeight);
+      this.detail.setSource(this.preview.displayBitmap, box,
+                            this.preview.verdictColour(
+                               this.preview.verdicts[index], false));
    }
 
    buildVerdictSection() {
@@ -1416,6 +1771,7 @@ var MeteorComposerDialog = class extends Dialog {
          numbers.push(i + 1);
       }
       this.preview.setCandidates(candidates, verdicts, numbers, selected);
+      this.updateDetail();
    }
 
    // --- Judging ------------------------------------------------------------
@@ -1569,11 +1925,30 @@ var MeteorComposerDialog = class extends Dialog {
          this.registeredDir = dir;
          this.dirEdit.text = dir;
       }
+      // Pane widths and the preview's orientation are per-operator working
+      // preferences, not per-session data, so they belong in Settings rather
+      // than in the session file.
+      var listWidth = Settings.read(SETTINGS_KEY + "/listWidth", DataType.Int32);
+      if (listWidth !== null && listWidth > 0) {
+         this.setListWidth(listWidth);
+      }
+      var detailWidth = Settings.read(SETTINGS_KEY + "/detailWidth", DataType.Int32);
+      if (detailWidth !== null && detailWidth > 0) {
+         this.setDetailWidth(detailWidth);
+      }
+      var rotation = Settings.read(SETTINGS_KEY + "/rotation", DataType.Int32);
+      if (rotation !== null) {
+         this.preview.rotation = normalizeRotation(rotation);
+      }
    }
 
    saveSettings() {
       Settings.write(SETTINGS_KEY + "/registeredDir", DataType.String,
                      this.registeredDir);
+      Settings.write(SETTINGS_KEY + "/listWidth", DataType.Int32, this.listWidth);
+      Settings.write(SETTINGS_KEY + "/detailWidth", DataType.Int32, this.detailWidth);
+      Settings.write(SETTINGS_KEY + "/rotation", DataType.Int32,
+                     normalizeRotation(this.preview.rotation));
    }
 
    updateEnabled() {
