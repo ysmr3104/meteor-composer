@@ -56,7 +56,9 @@ var MODULES = [
    "mask_geometry.js",
    "preview_geometry.js",
    "session_model.js",
-   "classifier.js"
+   "classifier.js",
+   "trail_mask.js",
+   "composition.js"
 ];
 
 // Top-level declarations only. Nested functions live inside a function scope
