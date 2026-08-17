@@ -181,6 +181,14 @@ suite("filtering: screening mode narrows, ground-truth mode never does", functio
    var byVerdict = model.filterRows(s, { verdicts: [V.UNREVIEWED] });
    ok(byVerdict.length === 2, "filtering by verdict works in screening mode");
 
+   model.setVerdict(s, 0, V.METEOR);
+   ok(model.filterRows(s, { verdicts: [V.METEOR] }).length === 1,
+      "filtering to a single verdict picks out that row");
+   ok(model.filterRows(s, { verdicts: [V.METEOR, V.UNREVIEWED] }).length === 2,
+      "several verdicts can be shown at once");
+   ok(model.filterRows(s, { verdicts: [] }).length === 0,
+      "an empty verdict list shows nothing");
+
    // docs/tests.md 5-2: building the ground truth only from what the
    // operational settings surfaced makes recall a tautology, so the
    // ground-truth mode ignores filters entirely rather than trusting the UI
@@ -190,8 +198,23 @@ suite("filtering: screening mode narrows, ground-truth mode never does", functio
    ]), M.GROUND_TRUTH);
    gt.rows[0].persistent = true;
    ok(model.filterRows(gt, { hidePersistent: true }).length === 2,
-      "ground-truth mode shows every candidate even when a filter is passed");
-   ok(!model.modeAllowsFiltering(M.GROUND_TRUTH), "ground-truth mode reports no filtering");
+      "ground-truth mode ignores a classifier-derived filter");
+   ok(!model.modeAllowsClassifierFiltering(M.GROUND_TRUTH),
+      "ground-truth mode reports no classifier filtering");
+
+   // Filtering by the operator's own verdict is a different thing and stays
+   // available everywhere. docs/tests.md 5-2 objects to building the
+   // evaluation set out of what the detector surfaced; reviewing one's own
+   // calls does not do that, and being unable to revisit them would make
+   // correcting a mistake needlessly hard.
+   model.setVerdict(gt, gt.rows[0].id, V.METEOR);
+   ok(model.filterRows(gt, { verdicts: [V.METEOR] }).length === 1,
+      "ground-truth mode still honours a verdict filter");
+   ok(model.filterRows(gt, { verdicts: [V.UNREVIEWED] }).length === 1,
+      "and can show what is still unjudged");
+   // Both at once: the classifier half is dropped, the operator half applies.
+   ok(model.filterRows(gt, { hidePersistent: true, verdicts: [V.METEOR] }).length === 1,
+      "a mixed filter keeps the verdict half and discards the classifier half");
    ok(!model.modeShowsScores(M.GROUND_TRUTH), "ground-truth mode reports no scores");
    ok(model.defaultSortKey(M.GROUND_TRUTH) === "frameIndex",
       "ground-truth mode defaults to capture order, not score order");

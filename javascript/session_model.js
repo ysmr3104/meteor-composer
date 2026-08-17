@@ -51,7 +51,17 @@ function modeShowsScores(mode) {
    return mode === MODE.SCREENING;
 }
 
-function modeAllowsFiltering(mode) {
+// Whether the mode may narrow the list using the CLASSIFIER's output -
+// scores, the persistent-track flag, anything the machine decided.
+//
+// This is not a blanket ban on filtering. docs/tests.md 5-2 objects to
+// building the evaluation set out of whatever the operational settings
+// surfaced, because then recall only measures what the detector already
+// found. Filtering by the operator's OWN verdict does not do that: it hides
+// nothing the operator has not already looked at, and it cannot steer them
+// toward the classifier's opinion. Revisiting one's own calls is
+// specifically useful, so that stays available in both modes.
+function modeAllowsClassifierFiltering(mode) {
    return mode === MODE.SCREENING;
 }
 
@@ -216,15 +226,18 @@ function step(rows, fromIndex, delta) {
 // makes recall a tautology.
 function filterRows(session, filter) {
    var rows = session.rows;
-   if (!modeAllowsFiltering(session.mode) || !filter) {
+   if (!filter) {
       return rows.slice();
    }
+   var classifierAllowed = modeAllowsClassifierFiltering(session.mode);
    var out = [];
    for (var i = 0; i < rows.length; ++i) {
       var row = rows[i];
-      if (filter.hidePersistent && row.persistent) {
+      // Classifier-derived, so ground-truth mode ignores it even if asked.
+      if (classifierAllowed && filter.hidePersistent && row.persistent) {
          continue;
       }
+      // The operator's own verdict, so honoured in every mode.
       if (filter.verdicts && !contains(filter.verdicts, row.verdict)) {
          continue;
       }
@@ -414,7 +427,7 @@ if (typeof module !== "undefined") {
       MODE: MODE,
       isValidVerdict: isValidVerdict,
       modeShowsScores: modeShowsScores,
-      modeAllowsFiltering: modeAllowsFiltering,
+      modeAllowsClassifierFiltering: modeAllowsClassifierFiltering,
       defaultSortKey: defaultSortKey,
       buildRows: buildRows,
       applyTracks: applyTracks,

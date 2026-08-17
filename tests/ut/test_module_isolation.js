@@ -271,7 +271,7 @@ suite("MeteorComposer.js only calls things that exist", function () {
                     "applyTracks", "summarize", "filterRows", "sortRows",
                     "setVerdict", "toSessionJSON", "applySessionJSON",
                     "toGroundTruth", "step", "defaultSortKey", "modeShowsScores",
-                    "modeAllowsFiltering", "layoutOverlay", "hitTest",
+                    "modeAllowsClassifierFiltering", "layoutOverlay", "hitTest",
                     "viewToImage", "candidateCentroid"];
    for (i = 0; i < crossings.length; ++i) {
       ok(declared[crossings[i]] !== undefined,
