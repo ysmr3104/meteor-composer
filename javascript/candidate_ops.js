@@ -269,7 +269,24 @@ function maxOf(list, key) {
 var DEFAULT_MATCH_OPTIONS = {
    maxFrameGap: 2,          // frames may be skipped when a trail is faint
    maxAngleDiff: 15.0,      // satellites keep a nearly constant orientation
-   maxCentroidShift: 400.0, // in samples of the working field, per frame
+   // In samples of the working field, per frame.
+   //
+   // Was 400, which is over half the width of the 753-sample field and links
+   // things that have nothing to do with each other. Measured on the
+   // 2026-08-12 session against the screening verdicts:
+   //
+   //   maxCentroidShift   tracks   persistent candidates   meteors caught
+   //              400       130                     302                2
+   //              200       135                     297                0
+   //              100       146                     282                0
+   //
+   // At 400 the linker swept up two labelled meteors and marked them
+   // persistent - exactly the failure that matters, since a meteor lost costs
+   // more than thirty aircraft kept (6.2). Dropping to 100 keeps 93% of the
+   // suppression and leaves a wide margin before meteors start being caught.
+   // A satellite crossing the field in 11-14 frames moves about 60 samples
+   // per frame, so 100 is still generous for what this is meant to link.
+   maxCentroidShift: 100.0,
 
    // Longest track that could still be a single meteor.
    //

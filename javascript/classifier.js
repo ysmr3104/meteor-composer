@@ -38,15 +38,28 @@ var DEFAULT_SCORE_OPTIONS = {
    // candidate_ops.DEFAULT_MATCH_OPTIONS.maxMeteorFrames for why it is 2.
    maxMeteorFrames: 2,
 
-   // A track counts as fixed when every member sits within this radius of the
-   // track's mean position, in samples of the working field. The measured
-   // spread of the real example was under 0.1 samples, so this is loose by a
-   // wide margin and still nowhere near the several hundred samples a
-   // satellite moves between frames.
-   stationaryRadius: 3.0,
+   // A recurring detection counts as a fixed structure when every occurrence
+   // sits within this radius of the group's centre, in samples of the working
+   // field. The measured spread of the real example was under 0.1 samples, so
+   // this is loose by a wide margin.
+   fixedRadius: 3.0,
 
-   // Two frames is not enough to tell "fixed" from "a meteor that straddled
-   // an exposure boundary and barely moved". Three is.
+   // ...and when their lengths agree to within this fraction. The real fixed
+   // structure varied by 0.4%; a coincidental cluster of unrelated candidates
+   // in the same place varied by 44%. The gap is wide enough that the exact
+   // value hardly matters.
+   fixedLengthTolerance: 0.15,
+
+   // How many occurrences before a position counts as a fixed structure.
+   //
+   // Must be above 2 so that a meteor straddling an exposure boundary - which
+   // appears twice in nearly the same place - can never qualify. Three would
+   // do, but a cluster of exactly three containing a real meteor was measured,
+   // so four leaves margin. The real structure appeared 22 times.
+   fixedMinOccurrences: 4,
+
+   // Kept for analyzeTracks, which still describes how far a track wanders.
+   stationaryRadius: 3.0,
    stationaryMinFrames: 3,
 
    // Multipliers, not vetoes. Even a stationary candidate keeps a non-zero
@@ -60,6 +73,166 @@ var DEFAULT_SCORE_OPTIONS = {
    // accuracy is 0.8 - strong, but not strong enough to decide alone.
    colourWeight: 0.7
 };
+
+// --- Fixed structures -------------------------------------------------------
+
+// Find detections that keep coming back in the same place with the same
+// shape, anywhere in the session.
+//
+// This deliberately does NOT go through the cross-frame track linker.
+// matchAcrossFrames only joins candidates in frames at most maxFrameGap
+// apart, because it exists to follow something moving. A fixed structure is
+// not moving and does not appear on a schedule: the real example turned up in
+// 22 frames spread over 613, so the linker split it into fragments and only 8
+// of the 22 were ever recognised.
+//
+// Position alone is not safe. A cluster of three candidates within 3 samples
+// of each other was measured that contained a real meteor - things do
+// coincide. What separates the fixed structure is that it is the SAME
+// detection every time:
+//
+//   fixed structure at (421.8, 181.2)   length 14.07 to 14.13   spread 0.4%
+//   the coincidental cluster            length 13.4, 20.1, 21.4  spread 44%
+//
+// So shape has to agree too, and the margin between the two cases is wide.
+function findFixedStructures(rows, options) {
+   var opt = mergeClassifierOptions(options);
+   var n = rows.length;
+   var parent = [];
+   var i, j;
+   for (i = 0; i < n; ++i) {
+      parent.push(i);
+   }
+
+   function find(a) {
+      while (parent[a] !== a) {
+         parent[a] = parent[parent[a]];
+         a = parent[a];
+      }
+      return a;
+   }
+   function union(a, b) {
+      var ra = find(a), rb = find(b);
+      if (ra !== rb) {
+         parent[rb] = ra;
+      }
+   }
+
+   // O(n^2). At 411 candidates that is trivial; a night that produced tens of
+   // thousands would want a spatial index, but nothing near that has been
+   // seen and an index would be untested complexity.
+   for (i = 0; i < n; ++i) {
+      var a = rows[i].candidate;
+      for (j = i + 1; j < n; ++j) {
+         var b = rows[j].candidate;
+         var dx = a.cx - b.cx;
+         var dy = a.cy - b.cy;
+         if (dx * dx + dy * dy > opt.fixedRadius * opt.fixedRadius) {
+            continue;
+         }
+         if (!similarLength(a.length, b.length, opt.fixedLengthTolerance)) {
+            continue;
+         }
+         union(i, j);
+      }
+   }
+
+   var groups = {};
+   for (i = 0; i < n; ++i) {
+      var root = find(i);
+      if (groups[root] === undefined) {
+         groups[root] = [];
+      }
+      groups[root].push(i);
+   }
+
+   var found = [];
+   for (var key in groups) {
+      var members = groups[key];
+      if (members.length < opt.fixedMinOccurrences) {
+         continue;
+      }
+      // Union-find joins transitively, so a chain of near-misses could form a
+      // group that is not tight as a whole. Check the finished group rather
+      // than trusting the pairwise steps that built it.
+      var stats = groupStats(rows, members);
+      if (stats.positionSpread > opt.fixedRadius) {
+         continue;
+      }
+      if (stats.lengthSpread > opt.fixedLengthTolerance) {
+         continue;
+      }
+      found.push({
+         members: members,
+         count: members.length,
+         cx: stats.cx,
+         cy: stats.cy,
+         positionSpread: stats.positionSpread,
+         lengthSpread: stats.lengthSpread
+      });
+   }
+   found.sort(function (p, q) { return q.count - p.count; });
+   return found;
+}
+
+function similarLength(a, b, tolerance) {
+   var mean = (a + b) / 2;
+   if (mean <= 0) {
+      return a === b;
+   }
+   return Math.abs(a - b) / mean <= tolerance;
+}
+
+function groupStats(rows, members) {
+   var sumX = 0, sumY = 0, i;
+   var minLen = Infinity, maxLen = -Infinity;
+   for (i = 0; i < members.length; ++i) {
+      var c = rows[members[i]].candidate;
+      sumX += c.cx;
+      sumY += c.cy;
+      if (c.length < minLen) {
+         minLen = c.length;
+      }
+      if (c.length > maxLen) {
+         maxLen = c.length;
+      }
+   }
+   var cx = sumX / members.length;
+   var cy = sumY / members.length;
+
+   var spread = 0;
+   for (i = 0; i < members.length; ++i) {
+      var d = rows[members[i]].candidate;
+      var dist = Math.sqrt((d.cx - cx) * (d.cx - cx) + (d.cy - cy) * (d.cy - cy));
+      if (dist > spread) {
+         spread = dist;
+      }
+   }
+   var meanLen = (minLen + maxLen) / 2;
+   return {
+      cx: cx, cy: cy,
+      positionSpread: spread,
+      lengthSpread: meanLen > 0 ? (maxLen - minLen) / meanLen : 0
+   };
+}
+
+// Mark every row that belongs to a fixed structure. Returns the structures.
+function markFixedStructures(rows, options) {
+   var found = findFixedStructures(rows, options);
+   var i, j;
+   for (i = 0; i < rows.length; ++i) {
+      rows[i].stationary = false;
+      rows[i].fixedCount = 0;
+   }
+   for (i = 0; i < found.length; ++i) {
+      for (j = 0; j < found[i].members.length; ++j) {
+         var row = rows[found[i].members[j]];
+         row.stationary = true;
+         row.fixedCount = found[i].count;
+      }
+   }
+   return found;
+}
 
 // --- Track geometry ---------------------------------------------------------
 
@@ -92,6 +265,10 @@ function analyzeTracks(tracks, options) {
          }
       }
 
+      // Kept as a description of the track's own geometry. It is NOT what
+      // decides a fixed structure: findFixedStructures() does that, because
+      // a fixed structure does not respect the linker's frame-gap limit and
+      // the linker only ever saw 8 of the real one's 22 occurrences.
       var stationary = members.length >= opt.stationaryMinFrames
                     && spread <= opt.stationaryRadius;
 
@@ -263,6 +440,8 @@ if (typeof module !== "undefined") {
       PRESETS: PRESETS,
       presetNames: presetNames,
       analyzeTracks: analyzeTracks,
+      findFixedStructures: findFixedStructures,
+      markFixedStructures: markFixedStructures,
       greenFraction: greenFraction,
       rankOf: rankOf,
       colourPopulation: colourPopulation,

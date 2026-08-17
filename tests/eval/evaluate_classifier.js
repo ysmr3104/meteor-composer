@@ -87,14 +87,28 @@ function build() {
             candidate: cand,
             verdict: verdicts[key] || "unreviewed",
             trackLength: t ? t.length : 1,
-            stationary: t ? t.stationary : false,
+            // stationary is filled in below by markFixedStructures, which
+            // works over the whole session rather than through the linker.
+            stationary: false,
             persistent: t ? t.persistent : false,
             colour: colour[key] || null
          });
       });
    });
 
-   return { rows: rows, haveColour: haveColour, analyzed: analyzed };
+   // A fixed structure does not respect the linker's frame-gap limit, so it
+   // is found across the whole session independently.
+   var fixed = clf.markFixedStructures(rows, null);
+
+   // A candidate cannot be both. Reporting a fixed structure as persistent
+   // would tell the operator it is a satellite, which is not what it is.
+   for (var i = 0; i < rows.length; ++i) {
+      if (rows[i].stationary) {
+         rows[i].persistent = false;
+      }
+   }
+
+   return { rows: rows, haveColour: haveColour, analyzed: analyzed, fixed: fixed };
 }
 
 function report(rows, label) {
@@ -169,6 +183,13 @@ function main() {
    var persistentRows = built.rows.filter(function (r) { return r.persistent; });
    console.log("stationary:  " + stationaryRows.length
                + "   persistent: " + persistentRows.length);
+   console.log("fixed structures found: " + built.fixed.length);
+   built.fixed.forEach(function (f) {
+      console.log("    (" + f.cx.toFixed(1) + ", " + f.cy.toFixed(1) + ")"
+                  + "  x" + f.count
+                  + "  spread " + f.positionSpread.toFixed(2)
+                  + "  length spread " + (f.lengthSpread * 100).toFixed(1) + "%");
+   });
 
    // Whether the stationary rule is safe matters more than whether it is
    // effective: a rule that suppresses a meteor is unusable no matter how

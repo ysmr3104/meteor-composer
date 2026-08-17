@@ -130,6 +130,118 @@ suite("analyzeTracks matches candidate_ops' own tracks", function () {
    ok(a.length === 3, "with the track's own length carried through");
 });
 
+// A session row as the UI builds it.
+function row(cx, cy, length, extra) {
+   var r = {
+      candidate: { cx: cx, cy: cy, length: length, angle: 45,
+                   elongation: 10, pixelCount: 20 },
+      trackLength: 1, stationary: false, persistent: false, colour: null
+   };
+   if (extra) {
+      for (var k in extra) {
+         r.candidate[k] = extra[k];
+      }
+   }
+   return r;
+}
+
+suite("findFixedStructures: recurring identical detections", function () {
+   // The real structure: 22 occurrences at (421.8, 181.2) with length 14.07
+   // to 14.13, scattered over 613 frames. The track linker only ever saw 8 of
+   // them because it will not join frames more than maxFrameGap apart, which
+   // is why this does not go through the linker at all.
+   var rows = [];
+   var i;
+   for (i = 0; i < 22; ++i) {
+      rows.push(row(421.8 + (i % 3) * 0.02, 181.2 - (i % 2) * 0.03,
+                    14.07 + (i % 4) * 0.02));
+   }
+   // ...plus unrelated candidates elsewhere.
+   rows.push(row(100, 100, 50));
+   rows.push(row(600, 300, 30));
+
+   var found = clf.findFixedStructures(rows, null);
+   ok(found.length === 1, "one fixed structure is found");
+   ok(found[0].count === 22, "with all 22 occurrences");
+   close(found[0].cx, 421.8, 0.1, "at the measured position");
+   ok(found[0].positionSpread < 0.2, "and it is tight");
+
+   clf.markFixedStructures(rows, null);
+   ok(rows[0].stationary, "members are marked");
+   ok(rows[0].fixedCount === 22, "and carry how many times it recurred");
+   ok(!rows[22].stationary, "an unrelated candidate is not marked");
+});
+
+suite("findFixedStructures: shape has to agree, not just position", function () {
+   // Measured: three candidates within a few samples of each other, one of
+   // them a real meteor. Lengths 13.4, 20.1 and 21.4 - they merely coincide.
+   // Position alone would have suppressed a meteor.
+   var rows = [
+      row(431.1, 91.7, 21.4),
+      row(430.6, 89.5, 20.1),
+      row(433.4, 91.8, 13.4),   // the meteor
+      row(431.0, 91.0, 21.0)
+   ];
+   var found = clf.findFixedStructures(rows, { fixedMinOccurrences: 3 });
+   var caught = false;
+   for (var i = 0; i < found.length; ++i) {
+      if (found[i].members.indexOf(2) >= 0) {
+         caught = true;
+      }
+   }
+   ok(!caught, "the meteor is not swept into a fixed structure");
+
+   // The two that DO match in shape can still group, if the count allows.
+   var pair = clf.findFixedStructures(rows, { fixedMinOccurrences: 2 });
+   ok(pair.length >= 1, "candidates that agree in shape do group");
+   for (var j = 0; j < pair.length; ++j) {
+      ok(pair[j].members.indexOf(2) < 0,
+         "and the odd length is never one of them");
+   }
+});
+
+suite("findFixedStructures: a straddling meteor can never qualify", function () {
+   // A meteor at an exposure boundary appears twice in nearly the same place
+   // with a similar length. The minimum occurrence count exists so that this
+   // case - the one maxMeteorFrames was introduced to protect - cannot be
+   // reclassified as a fixed structure.
+   var rows = [row(500, 400, 20.0), row(500.1, 400.05, 19.5)];
+   ok(clf.findFixedStructures(rows, null).length === 0,
+      "two occurrences are never a fixed structure");
+
+   var three = [row(500, 400, 20.0), row(500.1, 400.05, 19.5), row(499.9, 400.1, 20.2)];
+   ok(clf.findFixedStructures(three, null).length === 0,
+      "nor are three, with the default minimum of four");
+
+   var four = three.concat([row(500.05, 399.95, 19.8)]);
+   ok(clf.findFixedStructures(four, null).length === 1,
+      "four identical occurrences is a fixed structure");
+});
+
+suite("findFixedStructures: transitive chaining is checked, not trusted", function () {
+   // Union-find joins A-B and B-C into one group even when A and C are far
+   // apart. A chain of near-misses must not become a "fixed structure" that
+   // is not actually fixed.
+   var rows = [
+      row(100.0, 100, 20.0),
+      row(102.5, 100, 20.0),
+      row(105.0, 100, 20.0),
+      row(107.5, 100, 20.0),
+      row(110.0, 100, 20.0)
+   ];
+   var found = clf.findFixedStructures(rows, { fixedRadius: 3.0 });
+   ok(found.length === 0,
+      "a strung-out chain is rejected because the finished group is not tight");
+
+   // The same five, actually together, are accepted.
+   var tight = [
+      row(100.0, 100, 20.0), row(100.5, 100, 20.0), row(100.2, 100.3, 20.0),
+      row(99.8, 100.1, 20.0), row(100.1, 99.9, 20.0)
+   ];
+   ok(clf.findFixedStructures(tight, { fixedRadius: 3.0 }).length === 1,
+      "a genuinely tight group is accepted");
+});
+
 suite("greenFraction", function () {
    close(clf.greenFraction({ r: 1, g: 2, b: 1 }), 0.5, 1e-9, "2 of 4 is a half");
    close(clf.greenFraction({ r: 1, g: 1, b: 1 }), 1 / 3, 1e-9, "equal channels give a third");
