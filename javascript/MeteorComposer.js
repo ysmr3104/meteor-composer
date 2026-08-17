@@ -40,6 +40,10 @@
 
 #define DRAG_THRESHOLD 4
 
+// Written beside the detection results after every verdict, so that closing
+// the dialog - or losing it - never costs the screening work.
+#define AUTOSAVE_NAME "meteor_session.json"
+
 // Overlay colours by verdict. Unreviewed is deliberately the most visible:
 // it is the thing the operator is looking for.
 #define COLOUR_UNREVIEWED 0xFFFFD24A
@@ -67,6 +71,11 @@ function baseName(path) {
    var trimmed = path.replace(/[\/\\]+$/, "");
    var cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
    return cut >= 0 ? trimmed.slice(cut + 1) : trimmed;
+}
+
+function directoryOf(path) {
+   var cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
+   return cut > 0 ? path.slice(0, cut) : "";
 }
 
 function listFrames(dir) {
@@ -959,6 +968,13 @@ var MeteorComposerDialog = class extends Dialog {
       this.detectionResults = null;
       this.cancelRequested = false;
       this._syncingSelection = false;
+      // Set when a verdict changes, cleared when the work reaches disk by any
+      // route. Autosave normally clears it within a keystroke, so the
+      // confirmation on close only appears when saving is actually failing -
+      // which is exactly when it is worth appearing.
+      this.dirty = false;
+      this.resultsPath = null;
+      this.autosaveError = null;
       // defaultSortKey() returns "score" for screening mode, but nothing
       // produces a score yet (Phase 2). Sorting by it would silently be
       // sorting by nothing, so fall back to capture order until it exists.
@@ -1384,6 +1400,12 @@ var MeteorComposerDialog = class extends Dialog {
          self.judge(VERDICT.UNCERTAIN);
       };
 
+      this.prevButton = new PushButton(this.verdictGroup);
+      this.prevButton.text = "< Previous (P)";
+      this.prevButton.onClick = function () {
+         self.selectDisplayed(step(self.displayed, self.currentRow, -1), true);
+      };
+
       this.clearVerdictButton = new PushButton(this.verdictGroup);
       this.clearVerdictButton.text = "Clear";
       this.clearVerdictButton.onClick = function () {
@@ -1396,6 +1418,8 @@ var MeteorComposerDialog = class extends Dialog {
       this.verdictGroup.sizer = new HorizontalSizer;
       this.verdictGroup.sizer.margin = 6;
       this.verdictGroup.sizer.spacing = 6;
+      this.verdictGroup.sizer.add(this.prevButton);
+      this.verdictGroup.sizer.addSpacing(10);
       this.verdictGroup.sizer.add(this.meteorButton);
       this.verdictGroup.sizer.add(this.notMeteorButton);
       this.verdictGroup.sizer.add(this.uncertainButton);
@@ -1428,15 +1452,23 @@ var MeteorComposerDialog = class extends Dialog {
       this.closeButton = new PushButton(this);
       this.closeButton.text = "Close";
       this.closeButton.onClick = function () {
-         self.ok();
+         self.requestClose();
       };
+
+      this.autosaveLabel = new Label(this);
+      this.autosaveLabel.text = "";
+      this.autosaveLabel.toolTip =
+         "<p>Verdicts are written to " + AUTOSAVE_NAME + " beside the "
+       + "detection results after every judgement, so there is nothing to "
+       + "remember to save.</p>";
 
       this.buttonSizer = new HorizontalSizer;
       this.buttonSizer.spacing = 6;
       this.buttonSizer.add(this.saveSessionButton);
       this.buttonSizer.add(this.loadSessionButton);
       this.buttonSizer.add(this.exportButton);
-      this.buttonSizer.addStretch();
+      this.buttonSizer.addSpacing(12);
+      this.buttonSizer.add(this.autosaveLabel, 100);
       this.buttonSizer.add(this.closeButton);
    }
 
@@ -1545,6 +1577,8 @@ var MeteorComposerDialog = class extends Dialog {
       }
       try {
          var payload = JSON.parse(File.readTextFile(dlg.fileName));
+         // Remembered so the autosave lands beside the results it belongs to.
+         this.resultsPath = dlg.fileName;
          // Only a full path is usable here. `group` is the directory's name,
          // not a path, so adopting it would produce a path that resolves to
          // nothing and every frame would fail to open. Leave an
@@ -1590,6 +1624,8 @@ var MeteorComposerDialog = class extends Dialog {
       this.cache.clear();
       this.refreshList();
       this.updateEnabled();
+      this.updateAutosaveLabel();
+      this.offerResume();
    }
 
    // --- List ---------------------------------------------------------------
@@ -1782,11 +1818,14 @@ var MeteorComposerDialog = class extends Dialog {
       }
       var row = this.displayed[this.currentRow];
       setVerdict(this.session, row.id, verdict);
+      this.dirty = true;
 
       var node = this.candidateTree.child(this.currentRow);
       if (node !== null) {
          node.setText(this.columns.length - 1, this.verdictText(verdict));
       }
+
+      this.autosave();
 
       // Judging advances, so a pass through the list is one keystroke per
       // candidate. Correcting means stepping back with the arrow keys.
@@ -1831,6 +1870,11 @@ var MeteorComposerDialog = class extends Dialog {
          case KeyCode.Space:
             this.selectDisplayed(step(this.displayed, this.currentRow, 1), true);
             return true;
+         // P for previous. The arrow keys do the same thing, but M/N/U are
+         // typed with the right hand and reaching for an arrow breaks the
+         // rhythm; N is already taken by not-a-meteor, so there is no
+         // matching letter for "next".
+         case KeyCode.P:
          case KeyCode.Left:
             this.selectDisplayed(step(this.displayed, this.currentRow, -1), true);
             return true;
@@ -1844,6 +1888,124 @@ var MeteorComposerDialog = class extends Dialog {
 
    // --- Persistence --------------------------------------------------------
 
+   // Where the automatic save goes: beside the detection results if they came
+   // from a file, otherwise beside the frames. Both are places the operator
+   // already thinks of as belonging to this session, so the file is where
+   // they would look for it.
+   autosavePath() {
+      var dir = null;
+      if (this.resultsPath !== null) {
+         dir = directoryOf(this.resultsPath);
+      }
+      if ((dir === null || dir.length === 0) && this.registeredDir.length > 0) {
+         dir = this.registeredDir;
+      }
+      if (dir === null || dir.length === 0) {
+         return null;
+      }
+      return dir + "/" + AUTOSAVE_NAME;
+   }
+
+   // Called after every verdict. The payload is a few kilobytes - only the
+   // judged rows are stored - so writing it on each keystroke costs nothing
+   // measurable, and it removes the need for the operator to remember to save.
+   autosave() {
+      if (this.session === null) {
+         return;
+      }
+      var path = this.autosavePath();
+      if (path === null) {
+         this.autosaveError = "nowhere to write to";
+         this.updateAutosaveLabel();
+         return;
+      }
+      try {
+         File.writeTextFile(path, JSON.stringify(toSessionJSON(this.session), null, 2));
+         this.dirty = false;
+         this.autosaveError = null;
+      } catch (e) {
+         // Keep `dirty` set: the work is not safe, and the confirmation on
+         // close is the last thing standing between the operator and losing
+         // it.
+         this.autosaveError = "" + e;
+      }
+      this.updateAutosaveLabel();
+   }
+
+   updateAutosaveLabel() {
+      if (this.autosaveError !== null) {
+         this.autosaveLabel.text = "Autosave FAILED: " + this.autosaveError;
+         return;
+      }
+      var path = this.autosavePath();
+      this.autosaveLabel.text = path === null
+         ? ""
+         : ("Autosaving to " + AUTOSAVE_NAME);
+   }
+
+   // Offer to pick up where the last run left off. Asked rather than applied
+   // silently: an autosave from a different night's work would otherwise
+   // stamp verdicts onto the wrong candidates without the operator noticing.
+   offerResume() {
+      var path = this.autosavePath();
+      if (path === null || !File.exists(path)) {
+         return;
+      }
+      var saved;
+      try {
+         saved = JSON.parse(File.readTextFile(path));
+      } catch (e) {
+         return;
+      }
+      var count = (saved && saved.verdicts) ? saved.verdicts.length : 0;
+      if (count === 0) {
+         return;
+      }
+      // Mixing modes would be worse than starting over: the ground-truth pass
+      // runs looser detection settings, so its candidate list is not the same
+      // list the screening pass sees.
+      if (saved.mode !== undefined && saved.mode !== this.mode) {
+         return;
+      }
+
+      var message = "An automatically saved session was found with "
+                  + count + " verdicts.\n\n" + path + "\n\nResume it?";
+      var box = new MessageBox(message, TITLE, StdIcon.Question,
+                               StdButton.Yes, StdButton.No);
+      if (box.execute() !== StdButton.Yes) {
+         return;
+      }
+      var out = applySessionJSON(this.session, saved);
+      this.refreshList();
+      if (out.orphans.length > 0) {
+         (new MessageBox(
+            "Restored " + out.restored + " verdicts. " + out.orphans.length
+          + " no longer match any candidate and were discarded - the "
+          + "detection parameters have probably changed since.",
+            TITLE, StdIcon.Information, StdButton.Ok)).execute();
+      }
+   }
+
+   // The Close button asks before discarding work. The window's own close
+   // button is not intercepted: Control.onClose()'s return value is not
+   // documented, and guessing wrong would make the dialog impossible to
+   // close. Autosave covers that route instead.
+   requestClose() {
+      if (this.dirty && this.session !== null) {
+         var summary = summarize(this.session);
+         var box = new MessageBox(
+            "There are " + summary.reviewed + " verdicts that could not be "
+          + "saved automatically"
+          + (this.autosaveError !== null ? " (" + this.autosaveError + ")" : "")
+          + ".\n\nClose anyway and lose them?",
+            TITLE, StdIcon.Warning, StdButton.No, StdButton.Yes);
+         if (box.execute() !== StdButton.Yes) {
+            return;
+         }
+      }
+      this.ok();
+   }
+
    saveSession() {
       if (this.session === null) {
          return;
@@ -1851,6 +2013,12 @@ var MeteorComposerDialog = class extends Dialog {
       var dlg = new SaveFileDialog;
       dlg.caption = "Save screening session";
       dlg.filters = [["JSON files", "*.json"]];
+      // Offer the same name and place the autosave uses, so an explicit save
+      // lands where the operator would go looking for it.
+      var suggested = this.autosavePath();
+      if (suggested !== null) {
+         dlg.initialPath = suggested;
+      }
       if (!dlg.execute()) {
          return;
       }
@@ -1873,6 +2041,10 @@ var MeteorComposerDialog = class extends Dialog {
       dlg.caption = "Load screening session";
       dlg.multipleSelections = false;
       dlg.filters = [["JSON files", "*.json"]];
+      var suggested = this.autosavePath();
+      if (suggested !== null) {
+         dlg.initialPath = suggested;
+      }
       if (!dlg.execute()) {
          return;
       }
@@ -1961,6 +2133,7 @@ var MeteorComposerDialog = class extends Dialog {
       this.notMeteorButton.enabled = hasSession;
       this.uncertainButton.enabled = hasSession;
       this.clearVerdictButton.enabled = hasSession;
+      this.prevButton.enabled = hasSession;
    }
 };
 
