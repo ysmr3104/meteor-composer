@@ -84,10 +84,20 @@ main() {
    case "$1" in
       --fetch)
          # リモートで生成された成果物を手元へ持ってくる。
+         #
+         # REMOTE_PATH は既定で $HOME を含むが、scp のリモートパスは
+         # ログインシェルを通らないため展開されない。先に ssh で実体の
+         # パスを解決してから scp に渡す。
          shift
+         local resolved
+         resolved="$(ssh "$REMOTE" "zsh -lc 'cd $REMOTE_PATH && pwd'")"
+         if [ -z "$resolved" ]; then
+            echo "エラー: リモートのリポジトリパスを解決できません: $REMOTE_PATH" >&2
+            exit 1
+         fi
          for path in "$@"; do
-            echo "==> 取得: $REMOTE:$REMOTE_PATH/$path"
-            scp -q "$REMOTE:$REMOTE_PATH/$path" "$REPO/$path"
+            echo "==> 取得: $REMOTE:$resolved/$path"
+            scp -q "$REMOTE:$resolved/$path" "$REPO/$path"
          done
          ;;
       --pjsr)
