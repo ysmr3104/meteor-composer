@@ -75,6 +75,20 @@ function makeSub(master, scale, offset, noise, seed) {
 
 //----------------------------------------------------------------------------
 
+// Cut a frame-sized mask down to one rectangle. The composite builds its masks
+// per trail and rectangle-local, so that is the shape addTrailLight takes.
+function localMask(mask, rect, width) {
+   var rw = rect.right - rect.left + 1;
+   var rh = rect.bottom - rect.top + 1;
+   var out = new Float32Array(rw * rh);
+   for (var y = 0; y < rh; ++y) {
+      for (var x = 0; x < rw; ++x) {
+         out[y * rw + x] = mask[(rect.top + y) * width + rect.left + x];
+      }
+   }
+   return out;
+}
+
 suite("linearFit recovers a known relationship", function () {
    var master = makeMaster(2000, 7);
    var sub = makeSub(master, 1.8, 0.03, 0, 11);
@@ -218,7 +232,8 @@ suite("light is added, never removed", function () {
 
    var fit = comp.fitOnGrid(master, sub, mask, W, H, null);
    var added = new Float32Array(n);
-   comp.addTrailLight(master, sub, fit, mask, W, rect, { level: 0 }, added);
+   comp.addTrailLight(master, sub, fit, localMask(mask, rect, W), rect, W,
+                      { level: 0 }, added);
 
    var negative = 0;
    var lifted = 0;
@@ -267,8 +282,8 @@ suite("the feather is reproduced proportionally", function () {
 
    var fit = { scale: 1, offset: 0, samples: 1000 };
    var added = new Float32Array(n);
-   comp.addTrailLight(master, sub, fit, mask, W,
-                      { left: 0, top: 0, right: W - 1, bottom: 0 },
+   var whole = { left: 0, top: 0, right: W - 1, bottom: 0 };
+   comp.addTrailLight(master, sub, fit, localMask(mask, whole, W), whole, W,
                       { level: 0 }, added);
 
    close(added[10], 0.4, 1e-6, "mask 1.0 adds all of it");
@@ -320,8 +335,9 @@ suite("two frames of one meteor do not erase each other", function () {
 
    // Both frames are fitted against the SAME master and write into the same
    // accumulator, in the order the composite would run them.
-   comp.addTrailLight(master, subA, fitA, mask, W, rect, { level: 0 }, added);
-   comp.addTrailLight(master, subB, fitB, mask, W, rect, { level: 0 }, added);
+   var local = localMask(mask, rect, W);
+   comp.addTrailLight(master, subA, fitA, local, rect, W, { level: 0 }, added);
+   comp.addTrailLight(master, subB, fitB, local, rect, W, { level: 0 }, added);
 
    var first = 20 * W + 40;
    var second = 20 * W + 80;
@@ -352,18 +368,14 @@ suite("composeFrame writes nothing when a fit is implausible", function () {
       makeSub(masterChannels[2], 0.02, 0.008, 0, 95)
    ];
 
-   var mask = new Float32Array(n);
-   var rect = { left: 80, top: 70, right: 120, bottom: 80 };
-   var x, y, ch;
-   for (y = rect.top; y <= rect.bottom; ++y) {
-      for (x = rect.left; x <= rect.right; ++x) {
-         mask[y * W + x] = 1;
-      }
-   }
+   var trail = { x0: 60, y0: 75, x1: 140, y1: 75, width: 3 };
+   var corridor = trailMask.renderCorridorMask([trail], W, H, null);
+   var rect = trailMask.corridorBounds(trail, W, H, null);
 
    var added = [new Float32Array(n), new Float32Array(n), new Float32Array(n)];
-   var result = comp.composeFrame(masterChannels, subChannels, mask, W, H,
-                                  [rect], added, null);
+   var maskOut = new Float32Array(n);
+   var result = comp.composeFrame(masterChannels, subChannels, corridor.data,
+                                  W, H, [trail], [rect], added, maskOut, null);
 
    ok(!result.written, "the frame was refused");
    ok(result.reason !== null && result.reason.indexOf("scale") >= 0,
@@ -371,7 +383,7 @@ suite("composeFrame writes nothing when a fit is implausible", function () {
    ok(result.channel === 2, "on the channel that failed");
 
    var touched = 0;
-   for (ch = 0; ch < 3; ++ch) {
+   for (var ch = 0; ch < 3; ++ch) {
       for (var i = 0; i < n; ++i) {
          if (added[ch][i] !== 0) {
             ++touched;
@@ -379,109 +391,153 @@ suite("composeFrame writes nothing when a fit is implausible", function () {
       }
    }
    ok(touched === 0, "and not one sample was written in any channel");
+
+   var masked = 0;
+   for (i = 0; i < n; ++i) {
+      if (maskOut[i] !== 0) {
+         ++masked;
+      }
+   }
+   ok(masked === 0, "and no mask was recorded for it either");
 });
 
-suite("end to end with a real trail mask", function () {
-   // The mask comes from trail_mask rather than being written by hand, so the
-   // two modules are exercised together in the shape the pipeline uses.
-   var W = 200, H = 120;
+suite("end to end: the mask finds a trail its own axis misses", function () {
+   // The case the measurement turned up. The detected endpoints come from the
+   // 1/8 field, and on eight of thirty-one real meteors the axis they define
+   // missed the trail by up to 12 px. Here the light is deliberately put 9 px
+   // off the axis, at an angle to it, which is what a rotation error looks
+   // like. A capsule around the axis would have to be 15 px wide to catch it;
+   // a mask built from the light catches it wherever it is.
+   var W = 300, H = 200;
    var n = W * H;
-   var master = makeMaster(n, 41);
-   var sub = makeSub(master, 1.3, 0.004, 0.002, 43);
+   var channels = 3;
+   var masterChannels = [], subChannels = [];
+   var ch, i, x, y;
+   for (ch = 0; ch < channels; ++ch) {
+      masterChannels.push(makeMaster(n, 41 + ch));
+      subChannels.push(makeSub(masterChannels[ch], 1.3, 0.004, 0.0008, 43 + ch));
+   }
 
-   var trail = { x0: 40, y0: 60, x1: 160, y1: 60, width: 3 };
-   var field = trailMask.renderMask([trail], W, H, null);
-   var rect = trailMask.maskBounds(trail, W, H, null);
+   var trail = { x0: 60, y0: 100, x1: 240, y1: 100, width: 3 };
 
-   // Put a meteor into the sub exactly where the mask is solid.
-   var i;
-   for (i = 0; i < n; ++i) {
-      if (field.data[i] >= 1) {
-         sub[i] += 0.3;
+   // The real trail: starts on the axis and drifts 9 px away by the far end.
+   var AMPLITUDE = 0.05;
+   for (x = 60; x <= 240; ++x) {
+      var drift = Math.round(9 * (x - 60) / 180);
+      for (var dy = -1; dy <= 1; ++dy) {
+         i = (100 + drift + dy) * W + x;
+         for (ch = 0; ch < channels; ++ch) {
+            subChannels[ch][i] += AMPLITUDE;
+         }
       }
    }
 
-   var added = [new Float32Array(n)];
-   var result = comp.composeFrame([master], [sub], field.data, W, H,
-                                  [rect], added, null);
+   var corridor = trailMask.renderCorridorMask([trail], W, H, null);
+   var rect = trailMask.corridorBounds(trail, W, H, null);
+   var added = [new Float32Array(n), new Float32Array(n), new Float32Array(n)];
+   var maskOut = new Float32Array(n);
+
+   var result = comp.composeFrame(masterChannels, subChannels, corridor.data,
+                                  W, H, [trail], [rect], added, maskOut, null);
    ok(result.written, "the frame was composited: " + (result.reason || "ok"));
    close(result.fits[0].scale, 1.3, 0.05, "and the fit recovers the sub's scale");
 
-   var composite = comp.applyAdded(master, added[0]);
+   var composite = comp.applyAdded(masterChannels[0], added[0]);
 
-   // On the trail's axis the full amplitude arrives.
-   var axis = 60 * W + 100;
-   close(composite[axis] - master[axis], 0.3, 0.01,
-         "the meteor arrives at full strength on the axis");
+   // The far end of the trail, 9 px off the axis, is covered.
+   var farEnd = (100 + 9) * W + 238;
+   close(composite[farEnd] - masterChannels[0][farEnd], AMPLITUDE, 0.01,
+         "light arrives at the far end of the trail, 9 px off the axis");
+   ok(maskOut[farEnd] > 0.9, "and the mask is solid there");
 
-   // Well away from it nothing changed at all.
-   var far = 10 * W + 10;
-   close(composite[far], master[far], 1e-9, "and the far sky is untouched");
+   // The core still runs along the assumed axis, where there is no light. That
+   // is deliberate - it is what guarantees an accepted meteor always
+   // contributes something - and the cost is bounded: only the positive half
+   // of the noise survives the clip, so what is added there is a fraction of a
+   // standard deviation and far below the master's own noise.
+   var onAxis = 100 * W + 238;
+   ok(maskOut[onAxis] >= 1, "the core still covers the assumed axis");
+   ok(added[0][onAxis] < 0.002,
+      "but next to nothing is added there (" + added[0][onAxis].toExponential(2)
+      + " against a trail amplitude of " + AMPLITUDE + ")");
 
-   // Nothing anywhere is darker than the master.
+   // Far from the trail nothing changed at all.
+   var far = 20 * W + 20;
+   close(composite[far], masterChannels[0][far], 1e-9, "and the far sky is untouched");
+
    var darkened = 0;
-   var outsideChanged = 0;
    for (i = 0; i < n; ++i) {
-      if (composite[i] < master[i]) {
+      if (composite[i] < masterChannels[0][i]) {
          ++darkened;
-      }
-      if (field.data[i] <= 0 && composite[i] !== master[i]) {
-         ++outsideChanged;
       }
    }
    ok(darkened === 0, "no sample anywhere was darkened");
-   ok(outsideChanged === 0, "and outside the mask the master is reproduced exactly");
 
-   // Where the mask stops is the whole correction. The light was measured to
-   // reach 1 sigma at 5 px from the axis and a tenth of that by 20 px, so the
-   // core ends at 5 and nothing at all is added past 20.
-   close(field.data[(60 + 3) * W + 100], 1, 1e-9, "the core is solid at 3 px");
-   ok(field.data[(60 + 12) * W + 100] > 0 && field.data[(60 + 12) * W + 100] < 1,
-      "the feather is partial at 12 px");
-   close(field.data[(60 + 21) * W + 100], 0, 1e-9, "and there is no mask at 21 px");
+   // And it is TIGHT. The corridor is 25 px either side of a 180 px axis, so
+   // it holds well over ten thousand pixels; the trail is three wide.
+   var maskedPixels = 0;
+   for (i = 0; i < n; ++i) {
+      if (maskOut[i] > 0) {
+         ++maskedPixels;
+      }
+   }
+   var corridorPixels = 0;
+   for (i = 0; i < n; ++i) {
+      if (corridor.data[i] > 0) {
+         ++corridorPixels;
+      }
+   }
+   ok(maskedPixels < corridorPixels / 4,
+      "the mask uses a small part of the corridor it was given ("
+      + maskedPixels + " of " + corridorPixels + ")");
 });
 
 suite("local background removal changes what is added", function () {
    // With a local excess present, leaving it in means the mask paints it; the
    // clip at zero makes that a one-sided error, so it can only ever add sky.
-   var W = 200, H = 120;
+   // It also feeds the mask: an excess that is not removed reads as light and
+   // opens the mask across the whole corridor.
+   var W = 260, H = 180;
    var n = W * H;
-   var master = makeMaster(n, 51);
-   var sub = makeSub(master, 1.15, 0.003, 0.0001, 53);
+   var channels = 3;
+   var masterChannels = [], subChannels = [];
+   var ch, i, x, y;
+   for (ch = 0; ch < channels; ++ch) {
+      masterChannels.push(makeMaster(n, 51 + ch));
+      subChannels.push(makeSub(masterChannels[ch], 1.15, 0.003, 0.0001, 53 + ch));
+   }
 
-   var trail = { x0: 60, y0: 60, x1: 140, y1: 60, width: 3 };
-   var field = trailMask.renderMask([trail], W, H, null);
-   var rect = trailMask.maskBounds(trail, W, H, null);
+   var trail = { x0: 80, y0: 90, x1: 180, y1: 90, width: 3 };
 
    // A local excess covering the trail and its surroundings, and no meteor.
    var LOCAL = 0.0008;
-   var x, y;
-   for (y = 20; y < 100; ++y) {
-      for (x = 20; x < 180; ++x) {
-         sub[y * W + x] += LOCAL;
+   for (y = 40; y < 140; ++y) {
+      for (x = 30; x < 230; ++x) {
+         for (ch = 0; ch < channels; ++ch) {
+            subChannels[ch][y * W + x] += LOCAL;
+         }
       }
    }
 
-   var withRemoval = [new Float32Array(n)];
-   comp.composeFrame([master], [sub], field.data, W, H, [rect], withRemoval, null);
-   var without = [new Float32Array(n)];
-   comp.composeFrame([master], [sub], field.data, W, H, [rect], without,
+   var corridor = trailMask.renderCorridorMask([trail], W, H, null);
+   var rect = trailMask.corridorBounds(trail, W, H, null);
+
+   var withRemoval = [new Float32Array(n), new Float32Array(n), new Float32Array(n)];
+   comp.composeFrame(masterChannels, subChannels, corridor.data, W, H,
+                     [trail], [rect], withRemoval, null, null);
+   var without = [new Float32Array(n), new Float32Array(n), new Float32Array(n)];
+   comp.composeFrame(masterChannels, subChannels, corridor.data, W, H,
+                     [trail], [rect], without, null,
                      { removeLocalBackground: false });
 
    var sumWith = 0, sumWithout = 0;
-   for (var i = 0; i < n; ++i) {
+   for (i = 0; i < n; ++i) {
       sumWith += withRemoval[0][i];
       sumWithout += without[0][i];
    }
    ok(sumWithout > sumWith * 3,
       "leaving the local sky in paints far more of it (" + sumWithout.toExponential(2)
       + " against " + sumWith.toExponential(2) + ")");
-
-   // And with it removed, a frame with no meteor adds almost nothing: the
-   // remainder is the clipped half of the noise, not a level.
-   var meanWith = sumWith / trailMask.maskCoverage(field).touched;
-   ok(meanWith < LOCAL / 4,
-      "with it removed, next to nothing is added (" + meanWith.toExponential(2) + ")");
 });
 
 suite("fitIsPlausible", function () {

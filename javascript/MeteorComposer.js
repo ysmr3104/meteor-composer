@@ -2373,12 +2373,14 @@ var MeteorComposerDialog = class extends Dialog {
                                     + "   " + job.file;
             CoreApplication.processEvents();
 
-            var maskField = renderMask(job.trails, W, H, null);
-            // One rectangle per trail, so that the local sky is measured
-            // around each trail rather than once for the frame.
+            // The corridor is where to look for the trail, not the mask. The
+            // mask itself is built from the light, because the axis these
+            // trails carry comes from the 1/8 detection field and was measured
+            // to miss the real trail by up to 12 px.
+            var corridorField = renderCorridorMask(job.trails, W, H, null);
             var rects = [];
             for (var ti = 0; ti < job.trails.length; ++ti) {
-               rects.push(maskBounds(job.trails[ti], W, H, null));
+               rects.push(corridorBounds(job.trails[ti], W, H, null));
             }
 
             var subWindow = null;
@@ -2410,7 +2412,8 @@ var MeteorComposerDialog = class extends Dialog {
                }
 
                var outcome = composeFrame(masterChannels, subChannels,
-                                          maskField.data, W, H, rects, added, null);
+                                          corridorField.data, W, H, job.trails,
+                                          rects, added, combinedMask, null);
                if (!outcome.written) {
                   // Compositing a frame that does not match the master
                   // produces a result that looks plausible and is wrong, so
@@ -2420,11 +2423,6 @@ var MeteorComposerDialog = class extends Dialog {
                   continue;
                }
 
-               for (var m = 0; m < maskField.data.length; ++m) {
-                  if (maskField.data[m] > combinedMask[m]) {
-                     combinedMask[m] = maskField.data[m];
-                  }
-               }
                ++composed;
             } finally {
                subWindow.forceClose();

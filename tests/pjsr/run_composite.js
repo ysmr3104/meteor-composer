@@ -8,6 +8,7 @@
 // feathered mask around each trail.
 //
 //   light  = sub - fit(master -> sub) - localBackground , clipped at zero
+//   mask   = where that light stands above the noise, inside a corridor
 //   result = master + max over frames of ( light * mask )
 //
 // The arithmetic lives in composition.js and trail_mask.js, both pure
@@ -45,10 +46,9 @@ var SCREEN_FACTOR = 8;
 // 0 means all of them.
 var LIMIT = 0;
 
-// The measured defaults from trail_mask.js. The first run of this probe
-// overrode them with a mask that reached 53 px from the axis, six times the
-// distance the light was later measured to travel; see
-// tests/pjsr/probe_trail_profile.js and docs/requirements.md 7.1.10.
+// The measured defaults from trail_mask.js. The mask is no longer a shape laid
+// over the assumed axis but the region where the light actually is, inside a
+// corridor around that axis; see docs/requirements.md 7.1.11.
 var MASK_OPTIONS = null;
 
 var _log = [];
@@ -269,13 +269,12 @@ function main() {
       var job = jobs[k];
       var frameStart = Date.now();
 
-      var maskField = renderMask(job.trails, W, H, MASK_OPTIONS);
-      var coverage = maskCoverage(maskField);
-      // One rectangle per trail: the local sky is measured around each trail,
-      // not once for the frame.
+      // The corridor is the region to search, not the mask. It keeps the trail
+      // out of the linear fit and out of the local background ring.
+      var corridorField = renderCorridorMask(job.trails, W, H, MASK_OPTIONS);
       var rects = [];
       for (var ri = 0; ri < job.trails.length; ++ri) {
-         rects.push(maskBounds(job.trails[ri], W, H, MASK_OPTIONS));
+         rects.push(corridorBounds(job.trails[ri], W, H, MASK_OPTIONS));
       }
 
       var subWindow = null;
@@ -307,8 +306,9 @@ function main() {
             subChannels.push(channelToArray(subImage, c2));
          }
 
-         var outcome = composeFrame(masterChannels, subChannels, maskField.data,
-                                    W, H, rects, added, null);
+         var outcome = composeFrame(masterChannels, subChannels, corridorField.data,
+                                    W, H, job.trails, rects, added,
+                                    accumulatedMask.data, MASK_OPTIONS);
          if (!outcome.written) {
             log("  [SKIP] " + job.file + " channel " + outcome.channel
                 + ": " + outcome.reason);
@@ -318,22 +318,18 @@ function main() {
 
          var report = [];
          for (var c3 = 0; c3 < channels; ++c3) {
-            var trailReport = outcome.trails[0][c3];
+            var trailReport = outcome.trails[0].channels[c3];
             report.push("ch" + c3 + " scale=" + outcome.fits[c3].scale.toFixed(3)
                         + " bg=" + trailReport.background.level.toExponential(2)
                         + " peak=" + trailReport.peak.toFixed(4));
          }
-
-         for (var m = 0; m < maskField.data.length; ++m) {
-            if (maskField.data[m] > accumulatedMask.data[m]) {
-               accumulatedMask.data[m] = maskField.data[m];
-            }
-         }
+         var cov = outcome.trails[0].coverage;
+         report.push("mask=" + cov.touched + "px of " + cov.rectArea
+                     + " (" + (cov.touched / cov.rectArea * 100).toFixed(1) + "% of corridor)");
 
          ++composed;
          log("  [" + (k + 1) + "/" + jobs.length + "] " + job.file
              + "  trails=" + job.trails.length
-             + "  mask=" + (coverage.fraction * 100).toFixed(3) + "%"
              + "  " + report.join("  ")
              + "  (" + (Date.now() - frameStart) + " ms)");
       } finally {

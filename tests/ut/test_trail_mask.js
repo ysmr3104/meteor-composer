@@ -248,6 +248,207 @@ suite("maskCoverage", function () {
 });
 
 //----------------------------------------------------------------------------
+// The signal-driven mask
+//----------------------------------------------------------------------------
+
+// Deterministic noise, as everywhere else in these tests.
+function signalRandom(seed) {
+   var state = seed >>> 0;
+   return function () {
+      state = (state * 1664525 + 1013904223) >>> 0;
+      return state / 4294967296 - 0.5;
+   };
+}
+
+// A rectangle of noise with a straight trail of light drawn into it at a given
+// perpendicular offset from the axis the mask will be told about.
+function makeCorridor(trail, rect, sigma, seed, drawFn) {
+   var rw = rect.right - rect.left + 1;
+   var rh = rect.bottom - rect.top + 1;
+   var light = new Float32Array(rw * rh);
+   var rand = signalRandom(seed);
+   for (var i = 0; i < light.length; ++i) {
+      light[i] = rand() * sigma * 3.4641;   // uniform with deviation `sigma`
+   }
+   if (drawFn) {
+      drawFn(light, rw, rh, rect);
+   }
+   return { light: light, width: rw, height: rh };
+}
+
+suite("boxSmooth divides the noise without moving the light", function () {
+   var w = 60, h = 60;
+   var data = new Float32Array(w * h);
+   var rand = signalRandom(11);
+   var i;
+   for (i = 0; i < data.length; ++i) {
+      data[i] = rand() * 0.01;
+   }
+   var smoothed = mask.boxSmooth(data, w, h, 2);
+
+   function deviation(a) {
+      var sum = 0, sq = 0;
+      for (var k = 0; k < a.length; ++k) {
+         sum += a[k];
+         sq += a[k] * a[k];
+      }
+      var mean = sum / a.length;
+      return Math.sqrt(sq / a.length - mean * mean);
+   }
+
+   var before = deviation(data);
+   var after = deviation(smoothed);
+   // A 5x5 box of independent samples divides the deviation by 5. The edges
+   // average fewer samples, so the measured factor comes out a little short.
+   ok(after < before / 3.5 && after > before / 6,
+      "a 5x5 box divides the noise by about five (" + (before / after).toFixed(1) + ")");
+
+   // A flat field is unchanged, which is what "does not move the light" means
+   // at its simplest.
+   var flat = new Float32Array(w * h);
+   for (i = 0; i < flat.length; ++i) {
+      flat[i] = 0.25;
+   }
+   var flatSmoothed = mask.boxSmooth(flat, w, h, 2);
+   close(flatSmoothed[30 * w + 30], 0.25, 1e-6, "a flat field survives smoothing");
+   close(flatSmoothed[0], 0.25, 1e-6, "including at the corners");
+
+   ok(mask.boxSmooth(data, w, h, 0) === data, "a radius of zero is a no-op");
+});
+
+suite("the mask follows light that is off the assumed axis", function () {
+   // The reason this exists. The axis comes from the 1/8 detection field and
+   // was measured to miss the real trail by up to 12 px on eight of thirty-one
+   // meteors. A capsule around that axis has to be made wide to cover them;
+   // this finds the trail wherever it is inside the corridor.
+   var trail = { x0: 40, y0: 60, x1: 200, y1: 60 };
+   var rect = mask.corridorBounds(trail, 400, 200, null);
+   var SIGMA = 1e-4;
+   var OFFSET = 10;
+
+   var field = makeCorridor(trail, rect, SIGMA, 5, function (light, rw, rh, r) {
+      for (var x = 40; x <= 200; ++x) {
+         for (var dy = -1; dy <= 1; ++dy) {
+            var lx = x - r.left;
+            var ly = 60 + OFFSET + dy - r.top;
+            light[ly * rw + lx] += 0.01;
+         }
+      }
+   });
+
+   var m = mask.renderSignalMask(field.light, rect, trail, SIGMA, null);
+   var rw = rect.right - rect.left + 1;
+
+   function at(x, y) {
+      return m[(y - rect.top) * rw + (x - rect.left)];
+   }
+
+   close(at(120, 60 + OFFSET), 1, 1e-9, "the mask is solid on the real trail");
+   close(at(120, 60 + OFFSET + 12), 0, 1e-9,
+         "and is closed 12 px from the light");
+
+   // The width follows the brightness, which is the point of building the mask
+   // from the light: a faint trail gets a narrow mask and a bright one gets as
+   // much as it needs, without either being told a radius.
+   var faint = makeCorridor(trail, rect, SIGMA, 5, function (light, w, h, r) {
+      for (var x = 40; x <= 200; ++x) {
+         for (var dy = -1; dy <= 1; ++dy) {
+            light[(60 + OFFSET + dy - r.top) * w + (x - r.left)] += 0.0006;
+         }
+      }
+   });
+   var faintMask = mask.renderSignalMask(faint.light, rect, trail, SIGMA, null);
+   var wideCount = mask.signalMaskCoverage(m, rect).touched;
+   var narrowCount = mask.signalMaskCoverage(faintMask, rect).touched;
+   ok(narrowCount < wideCount,
+      "a trail one sixteenth as bright gets a narrower mask ("
+      + narrowCount + " against " + wideCount + ")");
+
+   // The core still runs along the assumed axis: that is the guarantee that an
+   // accepted meteor always contributes something.
+   close(at(120, 60), 1, 1e-9, "the core covers the assumed axis");
+   close(at(120, 60 + 6), 0, 1e-9,
+         "but nothing between the core and the trail is masked without light");
+});
+
+suite("noise that is not connected to the trail is left out", function () {
+   // Thresholding alone would sprinkle the corridor with single pixels that
+   // crossed it by chance, and each one would put a speck of sub-frame noise
+   // into the master. Only what is connected to the trail is kept.
+   var trail = { x0: 40, y0: 60, x1: 200, y1: 60 };
+   var rect = mask.corridorBounds(trail, 400, 200, null);
+   var SIGMA = 1e-4;
+   var rw = rect.right - rect.left + 1;
+
+   var field = makeCorridor(trail, rect, SIGMA, 7, function (light, w, h, r) {
+      var x, dy;
+      for (x = 40; x <= 200; ++x) {
+         for (dy = -1; dy <= 1; ++dy) {
+            light[(60 + dy - r.top) * w + (x - r.left)] += 0.01;
+         }
+      }
+      // A bright blob well away from the trail, as a star residual or a cosmic
+      // ray would be. It is inside the corridor and far above the threshold.
+      for (var by = 80; by <= 82; ++by) {
+         for (var bx = 100; bx <= 102; ++bx) {
+            light[(by - r.top) * w + (bx - r.left)] += 0.02;
+         }
+      }
+   });
+
+   var m = mask.renderSignalMask(field.light, rect, trail, SIGMA, null);
+   function at(x, y) {
+      return m[(y - rect.top) * rw + (x - rect.left)];
+   }
+
+   close(at(120, 60), 1, 1e-9, "the trail is masked");
+   close(at(101, 81), 0, 1e-9,
+         "and the disconnected blob 21 px away is not, however bright");
+});
+
+suite("the mask uses only as much of the corridor as the light needs", function () {
+   var trail = { x0: 40, y0: 60, x1: 200, y1: 60 };
+   var rect = mask.corridorBounds(trail, 400, 200, null);
+   var SIGMA = 1e-4;
+
+   var field = makeCorridor(trail, rect, SIGMA, 9, function (light, w, h, r) {
+      for (var x = 40; x <= 200; ++x) {
+         for (var dy = -1; dy <= 1; ++dy) {
+            light[(60 + dy - r.top) * w + (x - r.left)] += 0.01;
+         }
+      }
+   });
+
+   var m = mask.renderSignalMask(field.light, rect, trail, SIGMA, null);
+   var coverage = mask.signalMaskCoverage(m, rect);
+
+   ok(coverage.touched > 0, "something was masked");
+   ok(coverage.touched < coverage.rectArea / 5,
+      "and it is a small part of the corridor it was given ("
+      + coverage.touched + " of " + coverage.rectArea + ")");
+
+   // With no light at all, only the core survives - the guarantee, and nothing
+   // more.
+   var empty = makeCorridor(trail, rect, SIGMA, 13, null);
+   var emptyMask = mask.renderSignalMask(empty.light, rect, trail, SIGMA, null);
+   var emptyCoverage = mask.signalMaskCoverage(emptyMask, rect);
+   ok(emptyCoverage.touched < coverage.touched,
+      "an empty corridor masks less than one with a trail in it ("
+      + emptyCoverage.touched + " against " + coverage.touched + ")");
+   ok(emptyCoverage.solid > 0, "but the core is still there");
+});
+
+suite("a corridor mask is a plain capsule, not the composited mask", function () {
+   // It exists to keep the trail out of the linear fit and out of the local
+   // background ring. Confusing the two would fit the master to the meteor.
+   var trail = { x0: 50, y0: 50, x1: 150, y1: 50 };
+   var field = mask.renderCorridorMask([trail], 200, 100, null);
+   close(field.data[50 * 200 + 100], 1, 1e-9, "solid on the axis");
+   close(field.data[70 * 200 + 100], 1, 1e-9, "and 20 px away, unlike the mask");
+   close(field.data[80 * 200 + 100], 0, 1e-9, "and closed past the corridor");
+});
+
+//----------------------------------------------------------------------------
 
 console.log("\n============================================");
 console.log("passed: " + passed + "  failed: " + failed);
