@@ -287,8 +287,21 @@ suite("scoreCandidate", function () {
    var f = clf.scoreCandidate(fixed, null, null);
    ok(f.score < 0.05, "a fixed structure scores very low");
    ok(f.score > 0, "but never exactly zero - sorting must not hide it entirely");
-   ok(f.reasons.length === 1 && f.reasons[0].indexOf("stationary") >= 0,
-      "and says it is stationary, not that it is a satellite");
+   // What the reason has to convey is that the thing never moved, and what it
+   // must NOT convey is that it is a satellite: the operator reads this line to
+   // decide what they are looking at, and a wrong cause is worse than none.
+   //
+   // Asserted on the meaning rather than on a word. The first version of this
+   // checked for the word "stationary", which is the implementation's term, and
+   // it duly failed when the text was rewritten for the person reading it -
+   // while the property it was guarding was still intact.
+   ok(f.reasons.length === 1, "one reason is given");
+   ok(f.reasons[0].indexOf("never moves") >= 0
+      || f.reasons[0].indexOf("same place") >= 0,
+      "and it says the thing never moved: " + f.reasons[0]);
+   ok(f.reasons[0].toLowerCase().indexOf("satellite") < 0
+      && f.reasons[0].toLowerCase().indexOf("aircraft") < 0,
+      "and does not claim it is a satellite or an aircraft");
 
    var sat = { trackLength: 14, stationary: false, persistent: true, colour: null };
    var p = clf.scoreCandidate(sat, null, null);
