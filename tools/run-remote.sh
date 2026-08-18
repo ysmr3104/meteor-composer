@@ -142,7 +142,16 @@ main() {
       *)
          require_clean
          sync_remote
-         run_remote "$*"
+         # 引数はひとつずつクォートして渡す。"$*" のまま渡すとリモートの
+         # シェルが空白で再分割するため、`--accept-regression="複数語の理由"`
+         # のような引数が壊れる（実際に壊れて、理由の 2 語目がファイル名と
+         # して解釈された）。
+         local quoted=""
+         local arg
+         for arg in "$@"; do
+            quoted="$quoted $(printf '%q' "$arg")"
+         done
+         run_remote "$quoted"
          ;;
    esac
 }
