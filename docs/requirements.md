@@ -1003,6 +1003,14 @@ Stage 4 には呼び出し元が 2 つある。`tests/pjsr/run_composite.js` は
 
 中断した検出は `cancelled: true` と `framesRequested` を記録する。**部分的な結果ファイルは完全なものと見分けがつかず**、`evaluate.js` がそれを完全な結果として採点すると「検出器の劣化」に見える recall を報告する。`evaluate.js` 側でも警告を出すようにした。
 
+**`paths.js` を追加したらスクリプトが起動しなくなった。** 原因は JavaScript ではなく、PixInsight のプリプロセッサである。`// WBPP lays out <root>/registered/<group>/*.xisf` と書いたコメント中の `/*` をブロックコメントの開始と解釈し、閉じが見つからずファイルを丸ごと拒否していた。
+
+```
+*** Error: .../paths.js, line 44: Unterminated block comment.
+```
+
+**`node --check` は通る**（JS としては正しい）。プリプロセッサだけが誤読する。ディレクトリ構成を説明するコメントにグロブを書くのは自然な書き方なので、`tests/ut/test_module_isolation.js` に静的検査を追加した。文字列リテラル内の `/*` は問題ない（`FileFind` に `dir + "/*"` を渡すのは全域で使っている）ため、文字列を除いてから検査している。
+
 パス処理は `javascript/paths.js` に切り出して Small テストを付けた。**そのテストが即座に本物のバグを見つけた**: `baseName` は末尾の区切りを剥がすのに `directoryOf` は剥がしていなかった。`GetDirectoryDialog` が `.../registered/group/` を返すと親が `.../registered/group` になり、`registered` 判定が外れて**出力先が frames ディレクトリそのものになる**。いま防ごうとしていた事故が別経路で起きるところだった。
 
 #### GUI 実動作の確認（2026-08-18）

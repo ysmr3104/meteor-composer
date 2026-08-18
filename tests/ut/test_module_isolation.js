@@ -162,6 +162,50 @@ suite("the modules still work after the rename", function () {
 // from the outside the script just does nothing.
 //----------------------------------------------------------------------------
 
+//----------------------------------------------------------------------------
+// PixInsight preprocesses these files before V8 ever sees them, and its
+// preprocessor does not read JavaScript. What it accepts is a narrower
+// language, and the difference is invisible to `node --check`.
+//----------------------------------------------------------------------------
+
+suite("the PixInsight preprocessor can read every file", function () {
+   // A "/*" inside a // comment. The preprocessor takes it for the start of a
+   // block comment, never finds the close, and refuses the file:
+   //
+   //   *** Error: .../paths.js, line 44: Unterminated block comment.
+   //
+   // The script then does not start at all. It cost a session: the comment in
+   // question described a directory layout and wrote a glob, "<group>" followed
+   // by a slash and a star, which is the most natural way to write one.
+   //
+   // The same characters inside a string literal are fine - FileFind is given
+   // exactly that pattern all over this codebase - so strings are removed
+   // before looking.
+   var files = MODULES.concat(["MeteorComposer.js"]);
+   var offenders = [];
+   for (var i = 0; i < files.length; ++i) {
+      var full = path.join(JS_DIR, files[i]);
+      if (!fs.existsSync(full)) {
+         continue;
+      }
+      var lines = fs.readFileSync(full, "utf8").split("\n");
+      for (var j = 0; j < lines.length; ++j) {
+         var line = lines[j]
+            .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+            .replace(/'(?:[^'\\]|\\.)*'/g, "''");
+         var comment = line.indexOf("//");
+         if (comment >= 0 && line.indexOf("/*", comment) >= 0) {
+            offenders.push(files[i] + ":" + (j + 1));
+         }
+      }
+   }
+   ok(offenders.length === 0,
+      "no line comment contains the start of a block comment"
+      + (offenders.length > 0 ? ": " + offenders.join(", ") : ""));
+});
+
+//----------------------------------------------------------------------------
+
 var MAIN = path.join(JS_DIR, "MeteorComposer.js");
 
 // Globals supplied by the JavaScript language or by PixInsight itself. A bare
