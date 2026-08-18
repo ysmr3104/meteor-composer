@@ -1573,19 +1573,21 @@ var MeteorComposerDialog = class extends Dialog {
    // a mask is neither. It is a detection setting, so it belongs next to Run
    // detection.
    //
-   // Two spin boxes per edge, for the depth at each end. Not a depth and a
-   // tilt: a tilt is signed, and PJSR's SpinBox silently refuses negative
-   // values (tests/pjsr/probe_layout.js), so half of every tilt would have been
-   // unreachable. Depths are never negative, so all eight numbers step with the
-   // keyboard and there is no sign convention to explain.
+   // Per edge: how far in the band reaches, how much the boundary is tilted, and
+   // which way. The tilt is signed and PJSR's SpinBox cannot hold a negative
+   // number, so the sign is split off into the direction tick - which is the
+   // operator's own suggestion, and better than the alternative that was tried:
+   // two non-negative end depths cannot describe a boundary that leaves through
+   // the edge it belongs to, which is exactly the corner cut a real mask needed.
    //
-   // One row and not two. Measured: the eight spin boxes and their labels come
-   // to about 700 px, which leaves room even at the dialog's minimum width.
+   // Two rows of two edges. One row was measured at 1203-1235 px against the
+   // 1152 available at the dialog's minimum width, so it did not fit; two rows
+   // fit with room to spare and leave the excluded-area readout enough space to
+   // say what it means.
    buildMaskRows(pathLabelWidth) {
       var self = this;
       var group = this.sourceGroup;
       var nameWidth = this.font.width("Bottom:") + 6;
-      var pcWidth = this.font.width("%") + 4;
 
       this.maskLabel = new Label(group);
       this.maskLabel.text = "Mask:";
@@ -1626,56 +1628,67 @@ var MeteorComposerDialog = class extends Dialog {
 
       this.maskEdgeControls = {};
 
-      // "start" is the end nearest the origin: the left end for the top and
-      // bottom edges, the top end for the left and right ones. Said in the
-      // tooltip too, because the order of two identical boxes is not
-      // self-evident and getting it backwards mirrors the slope while leaving
-      // the excluded area - and so the readout - unchanged.
-      var makeCell = function (edge, name, firstEnd, secondEnd) {
+      var makeCell = function (edge, name) {
          var nameLabel = new Label(group);
          nameLabel.text = name + ":";
          nameLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
          nameLabel.setFixedWidth(nameWidth);
 
-         var tip = "<p>How far in from the " + name.toLowerCase()
-                 + " edge is excluded, as a percentage of the frame.</p>"
-                 + "<p>Two numbers: the depth at the " + firstEnd + " end, then "
-                 + "at the " + secondEnd + " end. Equal numbers give a straight "
-                 + "band; different ones slope it.</p>";
+         var depthTip = "<p>How far in from the " + name.toLowerCase()
+                      + " edge is excluded, as a percentage of the frame.</p>";
 
-         var spins = [];
-         for (var k = 0; k < 2; ++k) {
-            var spin = new SpinBox(group);
-            spin.setRange(0, 100);
-            spin.stepSize = 1;
-            spin.toolTip = tip;
-            spins.push(spin);
-         }
-         spins[0].value = self.maskEdges[edge].start;
-         spins[1].value = self.maskEdges[edge].end;
-         spins[0].onValueUpdated = function (value) {
-            self.maskEdges[edge].start = value;
-            self.refreshMask();
-         };
-         spins[1].onValueUpdated = function (value) {
-            self.maskEdges[edge].end = value;
+         var percent = new SpinBox(group);
+         percent.setRange(0, 100);
+         percent.stepSize = 1;
+         percent.suffix = " %";
+         percent.value = Math.round(self.maskEdges[edge].percent);
+         percent.toolTip = depthTip;
+         percent.onValueUpdated = function (value) {
+            self.maskEdges[edge].percent = value;
             self.refreshMask();
          };
 
-         var pcLabel = new Label(group);
-         pcLabel.text = "%";
-         pcLabel.textAlignment = TextAlignment.Left | TextAlignment.VertCenter;
-         pcLabel.setFixedWidth(pcWidth);
-         pcLabel.toolTip = tip;
+         var tiltTip =
+            "<p>Tilt of the boundary, in degrees, turning about the middle of "
+          + "the edge - so the excluded area stays where you set it while you "
+          + "adjust the slope.</p>"
+          + "<p>Clockwise on screen unless CCW is ticked. At zero depth a tilt "
+          + "still cuts a corner, which is often what is wanted.</p>";
 
-         self.maskEdgeControls[edge] = { start: spins[0], end: spins[1] };
+         var tilt = new SpinBox(group);
+         tilt.setRange(0, 45);
+         tilt.stepSize = 1;
+         tilt.suffix = " deg";
+         tilt.value = Math.round(Math.abs(self.maskEdges[edge].angle));
+         tilt.toolTip = tiltTip;
+         tilt.onValueUpdated = function (value) {
+            self.maskEdges[edge].angle = self.maskEdgeControls[edge].ccw.checked
+               ? -value : value;
+            self.refreshMask();
+         };
+
+         // The sign, split off because a SpinBox cannot hold one.
+         var ccw = new CheckBox(group);
+         ccw.text = "CCW";
+         ccw.checked = self.maskEdges[edge].angle < 0;
+         ccw.toolTip =
+            "<p>Tilt the other way: counter-clockwise on screen instead of "
+          + "clockwise.</p>"
+          + "<p>Nothing to do while the tilt is zero.</p>";
+         ccw.onCheck = function (checked) {
+            var magnitude = self.maskEdgeControls[edge].tilt.value;
+            self.maskEdges[edge].angle = checked ? -magnitude : magnitude;
+            self.refreshMask();
+         };
+
+         self.maskEdgeControls[edge] = { percent: percent, tilt: tilt, ccw: ccw };
 
          var cell = new HorizontalSizer;
          cell.spacing = 2;
          cell.add(nameLabel);
-         cell.add(spins[0]);
-         cell.add(spins[1]);
-         cell.add(pcLabel);
+         cell.add(percent);
+         cell.add(tilt);
+         cell.add(ccw);
          return cell;
       };
 
@@ -1688,33 +1701,43 @@ var MeteorComposerDialog = class extends Dialog {
 
       // The one number that makes over-masking visible. Nothing else in the
       // dialog would show it: detection would simply find less, and quietly.
+      //
+      // It is worth watching. Measured on the 2026-08-12 session, a hand-painted
+      // mask excluding 10.3% of the frame cost six labelled meteors, one of them
+      // a visual one - the hard gate - and nothing but this number hinted at it.
       this.maskReadout = new Label(group);
       this.maskReadout.text = "Excluded: none";
       this.maskReadout.textAlignment = TextAlignment.Left | TextAlignment.VertCenter;
       this.maskReadout.toolTip =
          "<p>How much of the frame the mask excludes. Detection never looks "
-       + "there, and it is not counted in the statistics either.</p>"
+       + "there, and it is left out of the statistics too.</p>"
        + "<p>Worth watching: over-masking costs meteors and there is no other "
-       + "sign of it - the candidate list simply comes back shorter.</p>";
-      // Fixed to its widest text, so it cannot squeeze the row's other items
-      // when the number grows.
+       + "sign of it - the candidate list simply comes back shorter.</p>"
+       + "<p>You do not need a mask for the area outside the registered frame. "
+       + "Samples with no data are found and excluded automatically, per frame, "
+       + "and they follow the shape exactly - which a straight edge cannot.</p>";
       this.maskReadout.setFixedWidth(
-         Math.max(this.font.width("Excluded: 100.0%"),
+         Math.max(this.font.width("Excluded: 100.0% of the frame"),
                   this.font.width(MASK_UNREADABLE)) + 8);
 
-      var rowEdges = new HorizontalSizer;
-      rowEdges.spacing = 6;
-      rowEdges.add(this.maskLabel);
-      rowEdges.add(this.maskEdgesRadio);
-      rowEdges.add(makeCell("top", "Top", "left", "right"));
-      rowEdges.addSpacing(8);
-      rowEdges.add(makeCell("bottom", "Bottom", "left", "right"));
-      rowEdges.addSpacing(8);
-      rowEdges.add(makeCell("left", "Left", "top", "bottom"));
-      rowEdges.addSpacing(8);
-      rowEdges.add(makeCell("right", "Right", "top", "bottom"));
-      rowEdges.addStretch();
-      rowEdges.add(this.maskReadout);
+      var rowTop = new HorizontalSizer;
+      rowTop.spacing = 6;
+      rowTop.add(this.maskLabel);
+      rowTop.add(this.maskEdgesRadio);
+      rowTop.add(makeCell("top", "Top"));
+      rowTop.addSpacing(14);
+      rowTop.add(makeCell("left", "Left"));
+      rowTop.addStretch();
+
+      var rowBottom = new HorizontalSizer;
+      rowBottom.spacing = 6;
+      rowBottom.add(spacer(pathLabelWidth));
+      rowBottom.add(spacer(radioWidth));
+      rowBottom.add(makeCell("bottom", "Bottom"));
+      rowBottom.addSpacing(14);
+      rowBottom.add(makeCell("right", "Right"));
+      rowBottom.addStretch();
+      rowBottom.add(this.maskReadout);
 
       this.maskFileEdit = new Edit(group);
       this.maskFileEdit.readOnly = true;
@@ -1767,7 +1790,7 @@ var MeteorComposerDialog = class extends Dialog {
       rowFile.add(this.maskRotateLabel);
       rowFile.add(this.maskRotateCombo);
 
-      return [rowEdges, rowFile];
+      return [rowTop, rowBottom, rowFile];
    }
 
    buildListSection() {
@@ -2410,8 +2433,9 @@ var MeteorComposerDialog = class extends Dialog {
       var edges = (this.maskMode === "edges");
       for (var i = 0; i < MASK_EDGES.length; ++i) {
          var cell = this.maskEdgeControls[MASK_EDGES[i]];
-         cell.start.enabled = edges;
-         cell.end.enabled = edges;
+         cell.percent.enabled = edges;
+         cell.tilt.enabled = edges;
+         cell.ccw.enabled = edges;
       }
       this.maskFileEdit.enabled = !edges;
       this.maskFileBrowseButton.enabled = !edges;
@@ -2424,8 +2448,9 @@ var MeteorComposerDialog = class extends Dialog {
       this.maskEdges = makeEdgeSpec();
       for (var i = 0; i < MASK_EDGES.length; ++i) {
          var cell = this.maskEdgeControls[MASK_EDGES[i]];
-         cell.start.value = 0;
-         cell.end.value = 0;
+         cell.percent.value = 0;
+         cell.tilt.value = 0;
+         cell.ccw.checked = false;
       }
       this.maskFilePath = "";
       this.maskFileLumRaw = null;
@@ -2572,7 +2597,8 @@ var MeteorComposerDialog = class extends Dialog {
          return;
       }
       var fraction = maskExcludedFraction(mask);
-      this.maskReadout.text = "Excluded: " + (fraction * 100).toFixed(1) + "%";
+      this.maskReadout.text = "Excluded: " + (fraction * 100).toFixed(1)
+                            + "% of the frame";
       this.preview.setMask(haveFrame ? maskOverlayBitmap(mask, fw, fh) : null);
    }
 
@@ -2587,7 +2613,7 @@ var MeteorComposerDialog = class extends Dialog {
       var edges = {};
       for (var i = 0; i < MASK_EDGES.length; ++i) {
          var e = this.maskEdges[MASK_EDGES[i]];
-         edges[MASK_EDGES[i]] = { start: e.start, end: e.end };
+         edges[MASK_EDGES[i]] = { percent: e.percent, angle: e.angle };
       }
       return { mode: "edges", edges: edges };
    }
@@ -2628,12 +2654,21 @@ var MeteorComposerDialog = class extends Dialog {
          var edge = MASK_EDGES[i];
          var from = (spec.edges && spec.edges[edge]) ? spec.edges[edge] : null;
          if (from !== null) {
-            this.maskEdges[edge].start = Math.round(clampPercent(from.start));
-            this.maskEdges[edge].end = Math.round(clampPercent(from.end));
+            this.maskEdges[edge].percent = Math.round(clampPercent(from.percent));
+            // Clamped to what the spin box can express, so the control and the
+            // model cannot disagree about what is set.
+            var tilt = Math.round(Number(from.angle) || 0);
+            if (tilt > 45) {
+               tilt = 45;
+            } else if (tilt < -45) {
+               tilt = -45;
+            }
+            this.maskEdges[edge].angle = tilt;
          }
          var cell = this.maskEdgeControls[edge];
-         cell.start.value = this.maskEdges[edge].start;
-         cell.end.value = this.maskEdges[edge].end;
+         cell.percent.value = this.maskEdges[edge].percent;
+         cell.tilt.value = Math.abs(this.maskEdges[edge].angle);
+         cell.ccw.checked = this.maskEdges[edge].angle < 0;
       }
       this.maskSourceChanged();
    }
@@ -2713,8 +2748,11 @@ var MeteorComposerDialog = class extends Dialog {
                // Built from this frame's own field size. The mask has to be
                // exactly the field's length, and a percentage describes the
                // same mask at any size, so nothing is carried between frames.
-               var r = detectCandidates(field, options,
-                                        this.maskForField(field.width, field.height));
+               var mask = this.maskForField(field.width, field.height);
+               if (i === 0) {
+                  this.reportMaskCost(field, mask);
+               }
+               var r = detectCandidates(field, options, mask);
                record.width = field.width;
                record.height = field.height;
                record.candidates = r.candidates;
@@ -2754,6 +2792,49 @@ var MeteorComposerDialog = class extends Dialog {
 
       this.adoptResults(results);
       this.writeResults(results);
+   }
+
+   // How much of the mask is sky, said once at the start of a run.
+   //
+   // The excluded percentage on its own does not distinguish the two things a
+   // mask can cover. Samples outside the registered frame are found and
+   // excluded automatically, per frame, following the shape exactly - so
+   // masking them by hand adds nothing. What the readout cannot separate is how
+   // much REAL SKY the mask also takes, and that is the part that costs
+   // meteors.
+   //
+   // Measured on the 2026-08-12 session: a painted mask excluding 10.3% of the
+   // frame cost six labelled meteors, one of them a visual one, because most of
+   // what it covered was sky that a straight edge could not avoid. Nothing in
+   // the dialog said so. Now it does.
+   reportMaskCost(field, mask) {
+      if (mask === null) {
+         console.writeln("<end><cbr>MeteorComposer: no exclusion mask.");
+         return;
+      }
+      var noData = noDataMask(field, 0);
+      var total = mask.length;
+      var excluded = 0;
+      var alsoEmpty = 0;
+      for (var i = 0; i < total; ++i) {
+         if (mask[i] === 0) {
+            ++excluded;
+            if (noData.usable !== null && noData.usable[i] === 0) {
+               ++alsoEmpty;
+            }
+         }
+      }
+      var sky = excluded - alsoEmpty;
+      var pc = function (n) { return (n / total * 100).toFixed(1) + "%"; };
+      console.writeln("<end><cbr>MeteorComposer: mask excludes " + pc(excluded)
+                      + " of the frame - " + pc(alsoEmpty)
+                      + " of it has no data anyway, " + pc(sky) + " is sky.");
+      if (sky / total > 0.02) {
+         console.warningln("** " + pc(sky) + " of the frame is sky the detection "
+            + "will not search. Samples outside the registered frame are already "
+            + "excluded automatically, per frame and to their exact shape, so a "
+            + "mask is only needed for something in front of the sky.");
+      }
    }
 
    // Write the detection out, so that eight minutes of work survives the

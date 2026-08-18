@@ -300,7 +300,35 @@ var DEFAULT_MATCH_OPTIONS = {
    // frames form 11 and 14 frame tracks. Track lengths cluster at 1 (63
    // tracks) and 2 (23 tracks), then thin out, so the boundary sits naturally
    // at 2.
-   maxMeteorFrames: 2
+   maxMeteorFrames: 2,
+
+   // A second way to join, for an object whose apparent speed changes.
+   //
+   // maxCentroidShift is a disc, and a disc cannot follow an aircraft coming
+   // towards the camera: its trail lengthens and its centroid moves further
+   // every frame. Measured on the 2026-08-12 session, one aircraft was tracked
+   // across seven frames and then broke loose, because the shift from frame
+   // 4976 to 4977 was 102.3 samples against a limit of 100 - and the next was
+   // 176. Both frames came back with a perfect score and sat at the top of the
+   // strict list.
+   //
+   // Raising the disc is not the answer; that was tried and it swept up two
+   // labelled meteors (see maxCentroidShift). What identifies the continuation
+   // is not proximity but that the new trail lies on the OLD trail's line and
+   // carries on from its end - which is what a trailed object crossing the sky
+   // does, and what two unrelated trails almost never do.
+   //
+   // Measured, with the same session and the ground truth as the gate:
+   //
+   //   rule                        persistent   strict list   visual recall
+   //   centroid only                      217            77         9/9
+   //   + continuation (perp 4-20)         225            69         9/9
+   //
+   // The result did not move across perpendicular tolerances from 4 to 20
+   // samples or gaps from 150 to 400, so the criterion is doing the work and
+   // not the threshold. These are the conservative end of that range.
+   maxContinuationPerp: 6.0,
+   maxContinuationGap: 150.0
 };
 
 // Link candidates that appear in consecutive frames.
@@ -312,6 +340,58 @@ var DEFAULT_MATCH_OPTIONS = {
 // frames is [{ file, index, candidates: [...] }, ...] in capture order.
 // The return value assigns a track id to every candidate and reports the run
 // length of each track.
+// Does `next` lie on `previous`'s line, carrying on from its end?
+//
+// The perpendicular test is one-directional on purpose: the new trail is tested
+// against the OLD trail's line, never the other way round. The reverse punishes
+// a short new trail, whose own direction is barely determined - and the last
+// frame of a departing aircraft is exactly that. Measured on the 2026-08-12
+// session: testing both ways put the old trail 21 samples off the new one's
+// line and refused the join, while the new trail was 2.6 samples off the old
+// one's.
+function continuesTrail(previous, next, frameGap, options) {
+   var opt = mergeWithDefaults(DEFAULT_MATCH_OPTIONS, options);
+   var perp = Math.max(perpendicularToLine(previous, next.x0, next.y0),
+                       perpendicularToLine(previous, next.x1, next.y1));
+   if (perp > opt.maxContinuationPerp) {
+      return false;
+   }
+   return nearestEndpointGap(previous, next) <= opt.maxContinuationGap * frameGap;
+}
+
+// Distance from a point to the INFINITE line through a candidate's endpoints.
+// The infinite line, not the segment: the point of the test is whether the new
+// trail is on the old one's extension.
+function perpendicularToLine(cand, px, py) {
+   var dx = cand.x1 - cand.x0;
+   var dy = cand.y1 - cand.y0;
+   var len = Math.sqrt(dx * dx + dy * dy);
+   if (len < 1e-9) {
+      return Math.sqrt((px - cand.x0) * (px - cand.x0)
+                       + (py - cand.y0) * (py - cand.y0));
+   }
+   return Math.abs(dx * (py - cand.y0) - dy * (px - cand.x0)) / len;
+}
+
+// Smallest distance between any endpoint of one trail and any endpoint of the
+// other: how far apart the two stretches are along the path they share.
+function nearestEndpointGap(a, b) {
+   var ends = [[a.x0, a.y0], [a.x1, a.y1]];
+   var others = [[b.x0, b.y0], [b.x1, b.y1]];
+   var best = Infinity;
+   for (var i = 0; i < ends.length; ++i) {
+      for (var j = 0; j < others.length; ++j) {
+         var dx = ends[i][0] - others[j][0];
+         var dy = ends[i][1] - others[j][1];
+         var d = Math.sqrt(dx * dx + dy * dy);
+         if (d < best) {
+            best = d;
+         }
+      }
+   }
+   return best;
+}
+
 function matchAcrossFrames(frames, options) {
    var opt = mergeWithDefaults(DEFAULT_MATCH_OPTIONS, options);
    var tracks = [];
@@ -337,7 +417,8 @@ function matchAcrossFrames(frames, options) {
             var dx = cand.cx - last.candidate.cx;
             var dy = cand.cy - last.candidate.cy;
             var shift = Math.sqrt(dx * dx + dy * dy);
-            if (shift > opt.maxCentroidShift * frameGap) {
+            if (shift > opt.maxCentroidShift * frameGap
+                && !continuesTrail(last.candidate, cand, frameGap, opt)) {
                continue;
             }
             if (shift < bestScore) {
@@ -408,6 +489,9 @@ if (typeof module !== "undefined") {
       axialGap: axialGap,
       mergeCollinear: mergeCollinear,
       matchAcrossFrames: matchAcrossFrames,
+      continuesTrail: continuesTrail,
+      perpendicularToLine: perpendicularToLine,
+      nearestEndpointGap: nearestEndpointGap,
       DEFAULT_MERGE_OPTIONS: DEFAULT_MERGE_OPTIONS,
       DEFAULT_MATCH_OPTIONS: DEFAULT_MATCH_OPTIONS
    };
