@@ -31,20 +31,34 @@ MeteorComposer は、一眼カメラで撮影した流星群の連番画像か�
 
 機能要件の全体像は [docs/requirements.md](docs/requirements.md) にあります。設計判断の根拠（なぜ参照差分を使わないか、なぜ比較明合成では駄目か等）も同ドキュメントに記録しているので、方針を変えようとする前に必ず目を通してください。
 
-### 現在の実装状況（Phase 1 進行中）
+### 現在の実装状況（Stage 1〜4 が実データで通っている。2026-08-18）
+
+**未検証のものは「未検証」と書く。** 動くはずだが確かめていないものを「実装済み」と書くと、次にこのファイルを読む者がそれを前提に積み上げる。
 
 | ファイル | 内容 | 状態 |
 |---|---|---|
 | `javascript/detection_core.js` | 検出コア（純粋 JS） | 実装済み |
-| `javascript/mask_geometry.js` | 除外領域 Tier 1 / Tier 2（純粋 JS） | 実装済み |
+| `javascript/mask_geometry.js` | 除外領域 Tier 1 / Tier 2（純粋 JS） | 実装済み・**未 include**（Tier 1 の UI が未着手） |
 | `javascript/candidate_ops.js` | 共線マージ・横断照合 | 実装済み |
 | `javascript/preview_geometry.js` | オーバーレイの座標変換・ヒットテスト（純粋 JS） | 実装済み |
 | `javascript/session_model.js` | スクリーニング状態・判定・JSON 往復（純粋 JS） | 実装済み |
-| `javascript/MeteorComposer.js` | UI とパイプライン統合（PJSR） | 実装済み・**GUI 未検証** |
-| `tests/pjsr/probe_*.js` | PJSR API 実地調査 | 完了 |
-| `tests/pjsr/probe_preview.js` | プレビュー生成の実測 | 完了 |
-| `tests/pjsr/run_detection.js` | 実データでの検出実行 | 実装済み |
+| `javascript/classifier.js` | 固定構造・軌跡・色によるスコアリング（純粋 JS） | 実装済み |
+| `javascript/trail_mask.js` | corridor と、光から作るマスク（純粋 JS） | 実装済み |
+| `javascript/composition.js` | フィット・局所背景・加算合成（純粋 JS） | 実装済み |
+| `javascript/MeteorComposer.js` | UI とパイプライン統合（PJSR） | 実装済み・**GUI 実動作を確認済み** |
+| `tests/ut/*.js` | Small テスト（1001 アサーション） | 全通過 |
+| `tests/pjsr/probe_*.js` | PJSR API・プレビュー・色・回転・チャンネル書き戻しの実測 | 完了 |
+| `tests/pjsr/probe_trail_profile.js` / `probe_trail_flare.js` | 流星光の広がりの実測（マスク寸法の根拠） | 完了 |
+| `tests/pjsr/run_detection.js` | 実データでの検出実行 | 実装済み・**決定性は未確認** |
+| `tests/pjsr/run_composite.js` | 実データでのコンポジット生成 | 実装済み |
+| `tests/pjsr/verify_composite.js` | 出力の正しさの検査 | 実装済み |
+| `tests/pjsr/compare_composites.js` | UI 経路と probe 経路の一致検査 | 実装済み（ビット単位で一致） |
 | `tests/eval/evaluate.js` | 正解との突き合わせ | 実装済み |
+| `tests/eval/analyze_mask.js` | マスク幾何とフレーム間の重なりの分析 | 実装済み |
+
+**GUI で確認済み**（2026-08-18、Screening モード・411 候補・31 本採用）: Score 列、スコア順ソート、カットオフのプリセット、衛星・飛行機のフィルタ、判定フィルタ、プレビューの回転保持・拡大ペイン・STF 固定、自動保存の復元、`Compose...`（パス推定・進捗表示・除外理由のコンソール出力）。
+
+**まだ確認していないこと**: `Run detection` を 2 回回して同じ結果が出るか（決定性）。判定は `file` + `indexInFrame` で紐づいているので、**ここがずれるとスクリーニングのやり直しになる**。
 
 ## コマンド
 
