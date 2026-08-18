@@ -51,6 +51,7 @@ var JS_DIR = path.join(__dirname, "..", "..", "javascript");
 
 // The pure modules that MeteorComposer.js pulls in with #include.
 var MODULES = [
+   "paths.js",
    "detection_core.js",
    "candidate_ops.js",
    "mask_geometry.js",
