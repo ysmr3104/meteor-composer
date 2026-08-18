@@ -578,6 +578,132 @@ suite("maskExcludedFraction", function () {
    close(mg.maskExcludedFraction(null), 0, 1e-12, "no mask excludes nothing");
 });
 
+suite("rotateLuminance: quarter turns clockwise", function () {
+   // 3 wide, 2 tall, every sample distinct so a wrong turn cannot look right:
+   //   1 2 3
+   //   4 5 6
+   var d = new Float32Array([1, 2, 3, 4, 5, 6]);
+
+   function rowsOf(r) {
+      var rows = [];
+      for (var y = 0; y < r.height; ++y) {
+         var row = [];
+         for (var x = 0; x < r.width; ++x) {
+            row.push(r.data[y * r.width + x]);
+         }
+         rows.push(row.join(","));
+      }
+      return rows.join("|");
+   }
+
+   var r0 = mg.rotateLuminance(d, 3, 2, 0);
+   ok(r0.width === 3 && r0.height === 2, "no turn keeps the size");
+   ok(rowsOf(r0) === "1,2,3|4,5,6", "and the samples (got " + rowsOf(r0) + ")");
+   ok(r0.data === d, "no turn hands back the same array rather than copying");
+
+   var r90 = mg.rotateLuminance(d, 3, 2, 90);
+   ok(r90.width === 2 && r90.height === 3, "a quarter turn swaps the size");
+   ok(rowsOf(r90) === "4,1|5,2|6,3",
+      "90 clockwise (got " + rowsOf(r90) + ")");
+
+   var r180 = mg.rotateLuminance(d, 3, 2, 180);
+   ok(r180.width === 3 && r180.height === 2, "a half turn keeps the size");
+   ok(rowsOf(r180) === "6,5,4|3,2,1", "180 (got " + rowsOf(r180) + ")");
+
+   var r270 = mg.rotateLuminance(d, 3, 2, 270);
+   ok(r270.width === 2 && r270.height === 3, "three quarters swaps the size");
+   ok(rowsOf(r270) === "3,6|2,5|1,4",
+      "270 clockwise (got " + rowsOf(r270) + ")");
+});
+
+suite("rotateLuminance: the corner that matters", function () {
+   // Which corner the mask's black lands in is the whole question, so it is
+   // asserted on its own: a single dark sample at the top left, turned.
+   var w = 4, h = 3;
+   var d = new Float32Array(w * h);
+   for (var i = 0; i < d.length; ++i) {
+      d[i] = 1;
+   }
+   d[0] = 0;   // top-left
+
+   var r90 = mg.rotateLuminance(d, w, h, 90);
+   ok(r90.data[0 * r90.width + (r90.width - 1)] === 0,
+      "90 clockwise moves the top-left corner to the top right");
+
+   var r180 = mg.rotateLuminance(d, w, h, 180);
+   ok(r180.data[(h - 1) * w + (w - 1)] === 0,
+      "180 moves it to the bottom right");
+
+   var r270 = mg.rotateLuminance(d, w, h, 270);
+   ok(r270.data[(r270.height - 1) * r270.width + 0] === 0,
+      "270 clockwise moves it to the bottom left");
+});
+
+suite("rotateLuminance: four quarter turns come back", function () {
+   var w = 5, h = 3;
+   var d = new Float32Array(w * h);
+   for (var i = 0; i < d.length; ++i) {
+      d[i] = i / (w * h);
+   }
+   var r = { data: d, width: w, height: h };
+   for (var t = 0; t < 4; ++t) {
+      r = mg.rotateLuminance(r.data, r.width, r.height, 90);
+   }
+   ok(r.width === w && r.height === h, "back to the original size");
+   var same = true;
+   for (i = 0; i < d.length; ++i) {
+      if (r.data[i] !== d[i]) {
+         same = false;
+      }
+   }
+   ok(same, "and every sample is back where it started");
+});
+
+suite("rotateLuminance: angles outside 0-270", function () {
+   var d = new Float32Array([1, 2, 3, 4, 5, 6]);
+   var a = mg.rotateLuminance(d, 3, 2, 450);    // 450 = 90
+   var b = mg.rotateLuminance(d, 3, 2, 90);
+   ok(a.width === b.width && a.height === b.height, "450 is 90");
+   var same = true;
+   for (var i = 0; i < a.data.length; ++i) {
+      if (a.data[i] !== b.data[i]) {
+         same = false;
+      }
+   }
+   ok(same, "and the samples match");
+
+   var neg = mg.rotateLuminance(d, 3, 2, -90);  // -90 = 270
+   var c = mg.rotateLuminance(d, 3, 2, 270);
+   same = true;
+   for (i = 0; i < neg.data.length; ++i) {
+      if (neg.data[i] !== c.data[i]) {
+         same = false;
+      }
+   }
+   ok(same, "and -90 is 270");
+});
+
+suite("rotateLuminance and maskFromLuminance together", function () {
+   // A painted mask whose black is on the left, turned a quarter clockwise, has
+   // its black on top. This is the fix for a mask that was painted against a
+   // turned preview.
+   var w = 8, h = 8;
+   var lum = new Float32Array(w * h);
+   for (var y = 0; y < h; ++y) {
+      for (var x = 0; x < w; ++x) {
+         lum[y * w + x] = (x < 2) ? 0 : 1;
+      }
+   }
+   var straight = mg.maskFromLuminance(lum, w, h, w, h);
+   ok(straight[4 * w + 0] === 0 && straight[0 * w + 4] === 1,
+      "unturned: the left is excluded, the top is not");
+
+   var turned = mg.rotateLuminance(lum, w, h, 90);
+   var mask = mg.maskFromLuminance(turned.data, turned.width, turned.height, w, h);
+   ok(mask[0 * w + 4] === 0 && mask[4 * w + 0] === 1,
+      "turned a quarter clockwise: the top is excluded, the left is not");
+});
+
 //----------------------------------------------------------------------------
 // End to end: an edge band suppresses what falls inside it
 //----------------------------------------------------------------------------

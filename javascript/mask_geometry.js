@@ -450,6 +450,42 @@ function maskRuns(mask, width, height) {
    return runs;
 }
 
+// Turn a luminance field by a multiple of 90 degrees, clockwise.
+//
+// A painted mask is in the FRAME's orientation, but the operator paints it
+// against what is on screen - and the preview can be turned. It is also
+// perfectly normal for the file to arrive from a phone or a screenshot in a
+// different orientation entirely. Either way the fix is the same: turn the file
+// rather than ask the operator to go and re-export it.
+//
+// Clockwise, matching Bitmap.rotated() and the preview's own rotate buttons, so
+// there is one direction convention in the script rather than two.
+function rotateLuminance(data, width, height, degrees) {
+   var turn = ((Math.round(degrees / 90) % 4) + 4) % 4;
+   if (turn === 0) {
+      return { data: data, width: width, height: height };
+   }
+   var outWidth = (turn === 2) ? width : height;
+   var outHeight = (turn === 2) ? height : width;
+   var out = new Float32Array(outWidth * outHeight);
+   var x, y, src;
+   for (y = 0; y < outHeight; ++y) {
+      for (x = 0; x < outWidth; ++x) {
+         if (turn === 1) {
+            // 90 clockwise: the old top-left corner ends up at the top right.
+            src = (height - 1 - x) * width + y;
+         } else if (turn === 2) {
+            src = (height - 1 - y) * width + (width - 1 - x);
+         } else {
+            // 270 clockwise: the old top-left corner ends up at the bottom left.
+            src = x * width + (width - 1 - y);
+         }
+         out[y * outWidth + x] = data[src];
+      }
+   }
+   return { data: out, width: outWidth, height: outHeight };
+}
+
 // Fraction excluded by an explicit inclusion mask, in [0, 1]. Same readout as
 // excludedFraction() but for the painted path, so the UI can report one number
 // whichever source is active.
@@ -552,6 +588,7 @@ if (typeof module !== "undefined") {
       maskFromLuminance: maskFromLuminance,
       maskExcludedFraction: maskExcludedFraction,
       maskRuns: maskRuns,
+      rotateLuminance: rotateLuminance,
       buildValidDataMask: buildValidDataMask,
       erode: erode
    };

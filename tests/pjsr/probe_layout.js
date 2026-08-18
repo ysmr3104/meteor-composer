@@ -366,17 +366,30 @@ try {
    var browse2 = new PushButton(host4);
    browse2.text = "Browse...";
 
+   var turnLabel = new Label(host4);
+   turnLabel.text = "Turn:";
+   var turnCombo = new ComboBox(host4);
+   turnCombo.addItem("0 deg");
+   turnCombo.addItem("90 deg");
+   turnCombo.addItem("180 deg");
+   turnCombo.addItem("270 deg");
+
    var row4 = new HorizontalSizer;
    row4.spacing = 6;
    row4.add(sp);
    row4.add(radio2);
    row4.add(edit2, 100);
    row4.add(browse2);
+   row4.addSpacing(10);
+   row4.add(turnLabel);
+   row4.add(turnCombo);
    host4.sizer = row4;
    layout(host4, 1152);
    say("  at 1152: spacer " + sp.width + "  radio " + radio2.width
-       + "  edit " + edit2.width + "  browse " + browse2.width);
-   var sum4 = sp.width + radio2.width + edit2.width + browse2.width + 18;
+       + "  edit " + edit2.width + "  browse " + browse2.width
+       + "  turn label " + turnLabel.width + "  turn combo " + turnCombo.width);
+   var sum4 = sp.width + radio2.width + edit2.width + browse2.width
+            + turnLabel.width + turnCombo.width + 40;
    say((sum4 <= 1154) ? "  PASS  nothing overflows"
                       : "  FAIL  overflow by " + (sum4 - 1152));
 } catch (e) {
