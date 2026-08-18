@@ -1537,10 +1537,10 @@ var MeteorComposerDialog = class extends Dialog {
          "<p>Hide candidates whose track spans more frames than a meteor can: "
        + "more than maxMeteorFrames. Those move smoothly across the session, "
        + "which is a satellite or an aircraft.</p>"
-       + "<p>This does NOT hide fixed structures - candidates that sit still "
-       + "in registered coordinates, which are caused by stars. Those are "
-       + "scored down instead, because calling them satellites would be "
-       + "wrong.</p>";
+       + "<p>This does NOT hide detections that never move - the ones that "
+       + "come back at the same place frame after frame, which is what a star "
+       + "does. Those are scored down instead: calling them satellites would "
+       + "tell you the wrong thing about what you are looking at.</p>";
       this.hidePersistentCheck.onCheck = function () {
          self.refreshList();
       };
@@ -2061,7 +2061,8 @@ var MeteorComposerDialog = class extends Dialog {
       }
       scoreAll(this.session.rows, null);
       if (fixed.length > 0) {
-         console.writeln("<end><cbr>fixed structures: " + fixed.length);
+         console.writeln("<end><cbr>detections that never move: " + fixed.length
+                         + " (stars, most likely)");
       }
 
       var sum = summarize(this.session);
@@ -2129,11 +2130,16 @@ var MeteorComposerDialog = class extends Dialog {
       this.updateSummary();
    }
 
-   // A fixed structure and a satellite are both "seen many times", but they
-   // are not the same finding and the operator acts on them differently.
+   // Something that never moves and something that crosses the sky are both
+   // "seen many times", but they are not the same finding and the operator acts
+   // on them differently.
+   //
+   // The column used to read "22 fixed", which is the implementation's word for
+   // it. It says nothing to the person reading the list. "same place" is the
+   // observation, and it is what makes the row worth ignoring.
    trackText(row) {
       if (row.stationary) {
-         return row.fixedCount + " fixed";
+         return "same place x" + row.fixedCount;
       }
       return "" + row.trackLength + (row.persistent ? " *" : "");
    }

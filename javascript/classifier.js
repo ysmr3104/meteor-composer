@@ -365,8 +365,15 @@ function scoreCandidate(row, population, options) {
 
    if (row.stationary) {
       score *= opt.stationaryFactor;
-      reasons.push("stationary across " + row.trackLength
-                   + " frames - fixed structure, not a transient");
+      // Written for the operator, not for the implementation. "Fixed
+      // structure" is what this is called in the code and in the design notes,
+      // and asked what it meant, the operator said it was hard to tell. What
+      // is actually known is the observation - it is at the same place every
+      // time, so it cannot be something that flew past - and the cause is an
+      // inference, offered as one.
+      reasons.push("at the same place in " + row.trackLength
+                   + " frames - it never moves, so nothing flew past here"
+                   + " (a star, most likely)");
    } else if (row.persistent) {
       score *= opt.persistentFactor;
       reasons.push("moves across " + row.trackLength
@@ -421,8 +428,8 @@ function scoreAll(rows, options) {
 // leaves better than a factor of two in hand, `standard` closer to nine.
 var PRESETS = {
    loose:    { cutoff: 0.0,  label: "Loose - show everything" },
-   standard: { cutoff: 0.05, label: "Standard - drop fixed structures" },
-   strict:   { cutoff: 0.20, label: "Strict - likely meteors first" }
+   standard: { cutoff: 0.05, label: "Standard - drop what never moves" },
+   strict:   { cutoff: 0.20, label: "Strict - keep the likely meteors" }
 };
 
 function presetNames() {
