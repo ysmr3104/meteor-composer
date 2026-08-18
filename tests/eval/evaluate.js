@@ -38,6 +38,19 @@ function main() {
    var results = JSON.parse(fs.readFileSync(resultsPath, "utf8"));
    var gt = JSON.parse(fs.readFileSync(gtPath, "utf8"));
 
+   // A cancelled detection produces a perfectly ordinary-looking results file
+   // holding only the frames it got to. Scored as though it were complete, the
+   // recall it reports is really a measure of how far the run got - and it
+   // would look like a regression in the detector.
+   if (results.cancelled) {
+      console.error("");
+      console.error("*** This detection was CANCELLED: "
+                    + results.frames.length + " of "
+                    + (results.framesRequested || "?") + " frames were examined.");
+      console.error("*** Recall below is not comparable with a complete run.");
+      console.error("");
+   }
+
    var labelled = {};
    gt.meteors.forEach(function (m) { labelled[m.file] = m; });
    var uncertain = {};

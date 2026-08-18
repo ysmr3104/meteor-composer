@@ -22,6 +22,7 @@
 #define VERSION "0.1.0"
 #define TITLE   "MeteorComposer"
 
+#include "paths.js"
 #include "detection_core.js"
 #include "candidate_ops.js"
 #include "classifier.js"
@@ -47,6 +48,10 @@
 // the dialog - or losing it - never costs the screening work.
 #define AUTOSAVE_NAME "meteor_session.json"
 
+// The detection results the UI writes. The same name run_detection.js uses, so
+// either producer's file can be read by either consumer.
+#define RESULTS_NAME "detection_results.json"
+
 // Overlay colours by verdict. Unreviewed is deliberately the most visible:
 // it is the thing the operator is looking for.
 #define COLOUR_UNREVIEWED 0xFFFFD24A
@@ -59,27 +64,9 @@
 // PJSR layer: frames on disk
 //============================================================================
 
-// External volumes formatted as exFAT carry macOS AppleDouble sidecars named
-// "._<name>". They are not images and must be skipped.
-function isRealXisf(name) {
-   return name.length > 5
-       && name.indexOf("._") !== 0
-       && name.indexOf(".") !== 0
-       && name.toLowerCase().lastIndexOf(".xisf") === name.length - 5;
-}
 
-// Trailing separators are stripped first: a directory chosen from the browser
-// may or may not carry one, and "a/b/" would otherwise yield an empty name.
-function baseName(path) {
-   var trimmed = path.replace(/[\/\\]+$/, "");
-   var cut = Math.max(trimmed.lastIndexOf("/"), trimmed.lastIndexOf("\\"));
-   return cut >= 0 ? trimmed.slice(cut + 1) : trimmed;
-}
 
-function directoryOf(path) {
-   var cut = Math.max(path.lastIndexOf("/"), path.lastIndexOf("\\"));
-   return cut > 0 ? path.slice(0, cut) : "";
-}
+
 
 function listFrames(dir) {
    var names = [];
@@ -1207,6 +1194,10 @@ var MeteorComposerDialog = class extends Dialog {
       // which is exactly when it is worth appearing.
       this.dirty = false;
       this.resultsPath = null;
+      this.outputDir = "";
+      // Whether the operator set it themselves. A guess may be replaced by a
+      // better guess; a choice may not.
+      this.outputDirChosen = false;
       this.autosaveError = null;
       // Screening opens sorted by score, highest first: the ordering was
       // measured to put 25 of 31 labelled meteors in the top 50 rows.
@@ -1290,11 +1281,19 @@ var MeteorComposerDialog = class extends Dialog {
       var self = this;
 
       this.sourceGroup = new GroupBox(this);
-      this.sourceGroup.title = "Source";
+      this.sourceGroup.title = "Source / Destination";
+
+      var pathLabelWidth = 58;
+
+      this.dirLabel = new Label(this.sourceGroup);
+      this.dirLabel.text = "Frames:";
+      this.dirLabel.textAlignment = TextAlignment.Right | TextAlignment.VerticalCenter;
+      this.dirLabel.setFixedWidth(pathLabelWidth);
 
       this.dirEdit = new Edit(this.sourceGroup);
       this.dirEdit.readOnly = true;
-      this.dirEdit.toolTip = "<p>Directory of registered frames (.xisf).</p>";
+      this.dirEdit.toolTip = "<p>Directory of registered frames (.xisf). Read "
+                           + "only - nothing is ever written here.</p>";
 
       this.browseButton = new PushButton(this.sourceGroup);
       this.browseButton.text = "Browse...";
@@ -1304,7 +1303,54 @@ var MeteorComposerDialog = class extends Dialog {
          if (dlg.execute()) {
             self.registeredDir = dlg.directory;
             self.dirEdit.text = dlg.directory;
+            // Only a guess, and only when the operator has not made a choice
+            // of their own: overwriting a deliberate setting because the
+            // frames changed would be worse than guessing wrong once.
+            if (!self.outputDirChosen) {
+               self.setOutputDir(defaultOutputDir(dlg.directory));
+            }
             self.updateEnabled();
+         }
+      };
+
+      // Everything this script produces goes here: the detection results, the
+      // session that saves itself after every verdict, and the composite.
+      //
+      // It is a field in the window rather than a question asked later, and
+      // that is the correction to a real failure. Detection used to write its
+      // results NOWHERE - eight minutes of work lived in memory and left with
+      // the dialog - and the session saved itself into the directory of
+      // registered frames, which is the operator's input data and the last
+      // place anyone would look. Neither was visible from the UI, so neither
+      // could be noticed.
+      this.outputLabel = new Label(this.sourceGroup);
+      this.outputLabel.text = "Output:";
+      this.outputLabel.textAlignment = TextAlignment.Right | TextAlignment.VerticalCenter;
+      this.outputLabel.setFixedWidth(pathLabelWidth);
+
+      this.outputEdit = new Edit(this.sourceGroup);
+      this.outputEdit.toolTip =
+         "<p>Where everything this script writes goes: detection_results.json, "
+       + "the screening session (saved automatically after every verdict) and "
+       + "the composite.</p>"
+       + "<p>Kept out of the frames directory on purpose: that holds your "
+       + "input data.</p>";
+      this.outputEdit.onTextUpdated = function (text) {
+         self.outputDir = text.trim();
+         self.outputDirChosen = true;
+      };
+
+      this.outputBrowseButton = new PushButton(this.sourceGroup);
+      this.outputBrowseButton.text = "Browse...";
+      this.outputBrowseButton.onClick = function () {
+         var dlg = new GetDirectoryDialog;
+         dlg.caption = "Where to write results";
+         if (self.outputDir.length > 0) {
+            dlg.initialPath = self.outputDir;
+         }
+         if (dlg.execute()) {
+            self.setOutputDir(dlg.directory);
+            self.outputDirChosen = true;
          }
       };
 
@@ -1335,8 +1381,15 @@ var MeteorComposerDialog = class extends Dialog {
 
       var row1 = new HorizontalSizer;
       row1.spacing = 6;
+      row1.add(this.dirLabel);
       row1.add(this.dirEdit, 100);
       row1.add(this.browseButton);
+
+      var rowOutput = new HorizontalSizer;
+      rowOutput.spacing = 6;
+      rowOutput.add(this.outputLabel);
+      rowOutput.add(this.outputEdit, 100);
+      rowOutput.add(this.outputBrowseButton);
 
       var row2 = new HorizontalSizer;
       row2.spacing = 6;
@@ -1350,6 +1403,7 @@ var MeteorComposerDialog = class extends Dialog {
       this.sourceGroup.sizer.margin = 6;
       this.sourceGroup.sizer.spacing = 4;
       this.sourceGroup.sizer.add(row1);
+      this.sourceGroup.sizer.add(rowOutput);
       this.sourceGroup.sizer.add(row2);
    }
 
@@ -1788,9 +1842,9 @@ var MeteorComposerDialog = class extends Dialog {
       this.autosaveLabel = new Label(this);
       this.autosaveLabel.text = "";
       this.autosaveLabel.toolTip =
-         "<p>Verdicts are written to " + AUTOSAVE_NAME + " beside the "
-       + "detection results after every judgement, so there is nothing to "
-       + "remember to save.</p>";
+         "<p>Verdicts are written to " + AUTOSAVE_NAME + " in the output "
+       + "directory after every judgement, so there is nothing to remember to "
+       + "save.</p>";
 
       this.buttonSizer = new HorizontalSizer;
       this.buttonSizer.spacing = 6;
@@ -1876,8 +1930,53 @@ var MeteorComposerDialog = class extends Dialog {
       if (this.cancelRequested && results.frames.length < frames.length) {
          this.progressLabel.text = "Cancelled after " + results.frames.length
                                  + " / " + frames.length + " frames.";
+         // Recorded in the file itself. A partial results file is a perfectly
+         // ordinary-looking one, and tests/eval/evaluate.js would score it as
+         // though every frame had been examined - reporting a recall that is
+         // really a measure of how far the run got.
+         results.cancelled = true;
+         results.framesRequested = frames.length;
       }
+
       this.adoptResults(results);
+      this.writeResults(results);
+   }
+
+   // Write the detection out, so that eight minutes of work survives the
+   // dialog.
+   //
+   // It did not, before: `Run detection` kept its results in memory and wrote
+   // nothing at all. The verdicts autosaved, but they identify candidates by
+   // file and index within the frame, so without the candidate list they
+   // referred to nothing: the next session had to detect again, and any
+   // difference in the result would have orphaned every verdict.
+   //
+   // A failure here is reported and does not stop the screening - the results
+   // are already loaded, and the operator can still work. But it is said out
+   // loud, because the consequence of not knowing is discovering it after a
+   // night of screening.
+   writeResults(results) {
+      var path = this.resultsOutputPath();
+      if (path === null) {
+         (new MessageBox(
+            "The detection is loaded but could not be saved: no output "
+          + "directory is set.\n\nSet one and run the detection again, or the "
+          + "candidate list will be lost when this dialog closes.",
+            TITLE, StdIcon.Warning, StdButton.Ok)).execute();
+         return;
+      }
+      try {
+         File.writeTextFile(path, JSON.stringify(results));
+         this.resultsPath = path;
+         console.noteln("<end><cbr>MeteorComposer: detection written to " + path);
+      } catch (e) {
+         (new MessageBox(
+            "The detection is loaded but could not be written to\n" + path
+          + "\n\n" + e
+          + "\n\nThe candidate list will be lost when this dialog closes. "
+          + "Choose a writable output directory and detect again.",
+            TITLE, StdIcon.Error, StdButton.Ok)).execute();
+      }
    }
 
    detectionOptions() {
@@ -2260,22 +2359,39 @@ var MeteorComposerDialog = class extends Dialog {
 
    // --- Persistence --------------------------------------------------------
 
-   // Where the automatic save goes: beside the detection results if they came
-   // from a file, otherwise beside the frames. Both are places the operator
-   // already thinks of as belonging to this session, so the file is where
-   // they would look for it.
-   autosavePath() {
-      var dir = null;
+   setOutputDir(dir) {
+      this.outputDir = dir === null ? "" : dir;
+      this.outputEdit.text = this.outputDir;
+   }
+
+   // Where everything this script writes goes.
+   //
+   // The output field first, because it is the one the operator can see. Then
+   // the directory a results file was loaded from, which is a reasonable
+   // reading of "this session lives here". The frames directory is NOT a
+   // fallback any more: it holds the operator's input data, and a session file
+   // that appeared among 654 calibrated frames is one nobody finds.
+   writeDir() {
+      if (this.outputDir.length > 0) {
+         return this.outputDir;
+      }
       if (this.resultsPath !== null) {
-         dir = directoryOf(this.resultsPath);
+         var dir = directoryOf(this.resultsPath);
+         if (dir.length > 0) {
+            return dir;
+         }
       }
-      if ((dir === null || dir.length === 0) && this.registeredDir.length > 0) {
-         dir = this.registeredDir;
-      }
-      if (dir === null || dir.length === 0) {
-         return null;
-      }
-      return dir + "/" + AUTOSAVE_NAME;
+      return null;
+   }
+
+   autosavePath() {
+      var dir = this.writeDir();
+      return dir === null ? null : dir + "/" + AUTOSAVE_NAME;
+   }
+
+   resultsOutputPath() {
+      var dir = this.writeDir();
+      return dir === null ? null : dir + "/" + RESULTS_NAME;
    }
 
    // Called after every verdict. The payload is a few kilobytes - only the
@@ -2591,11 +2707,9 @@ var MeteorComposerDialog = class extends Dialog {
       return plain !== null ? plain : autocrop;
    }
 
-   // Beside the session file, which is where the operator has been watching
-   // their work save itself.
+   // The same directory as everything else this script writes.
    guessOutputPath() {
-      var session = this.autosavePath();
-      var dir = session !== null ? directoryOf(session) : this.registeredDir;
+      var dir = this.writeDir();
       if (dir === null || dir.length === 0) {
          return "";
       }
@@ -2846,6 +2960,16 @@ var MeteorComposerDialog = class extends Dialog {
          this.registeredDir = dir;
          this.dirEdit.text = dir;
       }
+      // An empty stored value is not a choice, so the guess from the frames
+      // directory still applies in that case.
+      var outputDir = Settings.read(SETTINGS_KEY + "/outputDir", DataType.String);
+      if (outputDir !== null && outputDir.length > 0) {
+         this.setOutputDir(outputDir);
+         this.outputDirChosen = true;
+      } else if (this.registeredDir.length > 0) {
+         this.setOutputDir(defaultOutputDir(this.registeredDir));
+      }
+
       // Pane widths and the preview's orientation are per-operator working
       // preferences, not per-session data, so they belong in Settings rather
       // than in the session file.
@@ -2866,6 +2990,7 @@ var MeteorComposerDialog = class extends Dialog {
    saveSettings() {
       Settings.write(SETTINGS_KEY + "/registeredDir", DataType.String,
                      this.registeredDir);
+      Settings.write(SETTINGS_KEY + "/outputDir", DataType.String, this.outputDir);
       Settings.write(SETTINGS_KEY + "/listWidth", DataType.Int32, this.listWidth);
       Settings.write(SETTINGS_KEY + "/detailWidth", DataType.Int32, this.detailWidth);
       Settings.write(SETTINGS_KEY + "/rotation", DataType.Int32,

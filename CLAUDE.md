@@ -37,6 +37,7 @@ MeteorComposer は、一眼カメラで撮影した流星群の連番画像か�
 
 | ファイル | 内容 | 状態 |
 |---|---|---|
+| `javascript/paths.js` | ファイル名・出力先の決定（純粋 JS） | 実装済み |
 | `javascript/detection_core.js` | 検出コア（純粋 JS） | 実装済み |
 | `javascript/mask_geometry.js` | 除外領域 Tier 1 / Tier 2（純粋 JS） | 実装済み・**未 include**（Tier 1 の UI が未着手） |
 | `javascript/candidate_ops.js` | 共線マージ・横断照合 | 実装済み |
@@ -58,7 +59,9 @@ MeteorComposer は、一眼カメラで撮影した流星群の連番画像か�
 
 **GUI で確認済み**（2026-08-18、Screening モード・411 候補・31 本採用）: Score 列、スコア順ソート、カットオフのプリセット、衛星・飛行機のフィルタ、判定フィルタ、プレビューの回転保持・拡大ペイン・STF 固定、自動保存の復元、`Compose...`（パス推定・進捗表示・除外理由のコンソール出力）。
 
-**まだ確認していないこと**: `Run detection` を 2 回回して同じ結果が出るか（決定性）。判定は `file` + `indexInFrame` で紐づいているので、**ここがずれるとスクリーニングのやり直しになる**。
+**書き出し先は 1 か所にまとめてある。** `Source / Destination` の `Output:` で指定したディレクトリに、`detection_results.json`・`meteor_session.json`（判定ごとに自動保存）・コンポジットのすべてが入る。**frames ディレクトリには何も書かない**（操作者の入力データなので）。既定値は frames の親（親が `registered` なら更にその上）で、Settings に保存される。
+
+**まだ確認していないこと**: GUI の `Run detection` の実動作（これまで検出はヘッドレスの `run_detection.js` でしか回していない）。および 2 回回して同じ結果が出るか（決定性）。判定は `file` + `indexInFrame` で紐づいているので、**ここがずれるとスクリーニングのやり直しになる**。
 
 ## コマンド
 
