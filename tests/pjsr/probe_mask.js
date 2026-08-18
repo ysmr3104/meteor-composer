@@ -57,7 +57,6 @@ function attempt(label, fn) {
 }
 
 say("probe_mask.js");
-say("PixInsight " + CoreApplication.versionString);
 say("");
 
 //----------------------------------------------------------------------------

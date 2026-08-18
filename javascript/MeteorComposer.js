@@ -1123,7 +1123,7 @@ var ComposeDialog = class extends Dialog {
 
       this.masterLabel = new Label(this);
       this.masterLabel.text = "Master light:";
-      this.masterLabel.textAlignment = TextAlignment.Right | TextAlignment.VerticalCenter;
+      this.masterLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
       this.masterLabel.setFixedWidth(labelWidth);
 
       this.masterEdit = new Edit(this);
@@ -1162,7 +1162,7 @@ var ComposeDialog = class extends Dialog {
 
       this.outputLabel = new Label(this);
       this.outputLabel.text = "Composite:";
-      this.outputLabel.textAlignment = TextAlignment.Right | TextAlignment.VerticalCenter;
+      this.outputLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
       this.outputLabel.setFixedWidth(labelWidth);
 
       this.outputEdit = new Edit(this);
@@ -1421,7 +1421,7 @@ var MeteorComposerDialog = class extends Dialog {
 
       this.dirLabel = new Label(this.sourceGroup);
       this.dirLabel.text = "Frames:";
-      this.dirLabel.textAlignment = TextAlignment.Right | TextAlignment.VerticalCenter;
+      this.dirLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
       this.dirLabel.setFixedWidth(pathLabelWidth);
 
       this.dirEdit = new Edit(this.sourceGroup);
@@ -1463,7 +1463,7 @@ var MeteorComposerDialog = class extends Dialog {
       // could be noticed.
       this.outputLabel = new Label(this.sourceGroup);
       this.outputLabel.text = "Output:";
-      this.outputLabel.textAlignment = TextAlignment.Right | TextAlignment.VerticalCenter;
+      this.outputLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
       this.outputLabel.setFixedWidth(pathLabelWidth);
 
       this.outputEdit = new Edit(this.sourceGroup);
@@ -1573,7 +1573,7 @@ var MeteorComposerDialog = class extends Dialog {
 
       this.maskLabel = new Label(group);
       this.maskLabel.text = "Mask:";
-      this.maskLabel.textAlignment = TextAlignment.Right | TextAlignment.VerticalCenter;
+      this.maskLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
       this.maskLabel.setFixedWidth(pathLabelWidth);
 
       this.maskEdgesRadio = new RadioButton(group);
@@ -1630,7 +1630,7 @@ var MeteorComposerDialog = class extends Dialog {
 
          var pcLabel = new Label(group);
          pcLabel.text = "%";
-         pcLabel.textAlignment = TextAlignment.Left | TextAlignment.VerticalCenter;
+         pcLabel.textAlignment = TextAlignment.Left | TextAlignment.VertCenter;
          pcLabel.setFixedWidth(pcWidth);
 
          var angle = new NumericEdit(group);
@@ -1653,7 +1653,7 @@ var MeteorComposerDialog = class extends Dialog {
 
          var degLabel = new Label(group);
          degLabel.text = "deg";
-         degLabel.textAlignment = TextAlignment.Left | TextAlignment.VerticalCenter;
+         degLabel.textAlignment = TextAlignment.Left | TextAlignment.VertCenter;
          degLabel.setFixedWidth(degWidth);
 
          self.maskEdgeControls[edge] = { percent: percent, angle: angle };
@@ -1725,7 +1725,7 @@ var MeteorComposerDialog = class extends Dialog {
       // dialog would show it: detection would simply find less, and quietly.
       this.maskReadout = new Label(group);
       this.maskReadout.text = "Excluded: none";
-      this.maskReadout.textAlignment = TextAlignment.Left | TextAlignment.VerticalCenter;
+      this.maskReadout.textAlignment = TextAlignment.Left | TextAlignment.VertCenter;
 
       var rowC = new HorizontalSizer;
       rowC.spacing = 6;
@@ -1823,7 +1823,7 @@ var MeteorComposerDialog = class extends Dialog {
       // is not the kind of filtering docs/tests.md 5-2 rules out.
       this.showLabel = new Label(this);
       this.showLabel.text = "Show:";
-      this.showLabel.textAlignment = TextAlignment.Right | TextAlignment.VerticalCenter;
+      this.showLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
 
       this.showCombo = new ComboBox(this);
       this.showCombo.addItem("All");
@@ -1853,7 +1853,7 @@ var MeteorComposerDialog = class extends Dialog {
       // discarded - and the default hides nothing.
       this.presetLabel = new Label(this);
       this.presetLabel.text = "Cutoff:";
-      this.presetLabel.textAlignment = TextAlignment.Right | TextAlignment.VerticalCenter;
+      this.presetLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
 
       this.presetCombo = new ComboBox(this);
       this.presetNameList = presetNames();
@@ -1912,7 +1912,7 @@ var MeteorComposerDialog = class extends Dialog {
 
       this.sortLabel = new Label(this);
       this.sortLabel.text = "Sort:";
-      this.sortLabel.textAlignment = TextAlignment.Right | TextAlignment.VerticalCenter;
+      this.sortLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
 
       // A combo box is horizontally expandable, so without a stretch at the end
       // of the row the two of them share out all the spare width and the row

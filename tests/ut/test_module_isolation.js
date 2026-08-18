@@ -435,13 +435,9 @@ suite("V8 constant style", function () {
    // Renaming the underscore away is not enough: the class it belongs to has
    // to be the one that exists. `TextAlign_Right` became `TextAlign.Right`
    // here, and there is no TextAlign object in PJSR at all - the class is
-   // TextAlignment, and the flag is VerticalCenter rather than VertCenter.
-   // Both throw on construction, and PJSR reports that only in the Process
-   // Console, so from the outside the dialog simply does not appear.
-   //
-   // Checked against the names PJSR actually declares:
-   //   /Applications/PixInsight/doc/pjsr/objects/<Object>/<Object>.html
-   // There is a directory for TextAlignment and none for TextAlign.
+   // TextAlignment. A missing class throws on construction and PJSR reports
+   // that only in the Process Console, so from the outside the dialog simply
+   // does not appear.
    var WRONG_CLASSES = {
       "TextAlign": "TextAlignment",
       "Align": "TextAlignment",
@@ -464,10 +460,68 @@ suite("V8 constant style", function () {
       "constants use classes that exist"
       + (wrong.length > 0 ? ": " + wrong.join(", ") : ""));
 
-   var vertCenter = source.match(/\bVertCenter\b/g);
-   ok(vertCenter === null,
-      "the vertical-centre flag is VerticalCenter"
-      + (vertCenter !== null ? " (" + vertCenter.length + " uses of VertCenter)" : ""));
+   // The right class with a member it does not declare is worse than the wrong
+   // class, because it does not throw: the expression is simply `undefined`,
+   // `flags | undefined` is `flags`, and the flag silently does nothing.
+   //
+   // `TextAlignment.VerticalCenter` was written in eleven places here and none
+   // of them centred anything. It looked plausible - PJSR spells out
+   // HorzCenter/VertCenter and this project had just finished expanding
+   // TextAlign to TextAlignment - and the guard that was supposed to catch it
+   // asserted the wrong spelling was the right one, so it agreed.
+   //
+   // So these lists are not written from memory. They are what PixInsight
+   // itself reports, from tests/pjsr/probe_constants.js:
+   //
+   //   tools/run-remote.sh --pjsr tests/pjsr/probe_constants.js
+   //
+   // measured against PixInsight 1.9.4 (arm64) on 2026-08-18.
+   var MEMBERS = {
+      TextAlignment: ["Bottom", "Center", "Default", "HorzCenter", "Justify",
+                      "Left", "Right", "Top", "Unknown", "VertCenter"],
+      StdIcon: ["Error", "Information", "NoIcon", "Question", "Warning"],
+      StdButton: ["Abort", "Cancel", "Ignore", "No", "NoButton", "NoToAll",
+                  "Ok", "Retry", "Yes", "YesToAll"],
+      FrameStyle: ["Box", "Flat", "Raised", "Styled", "Sunken"],
+      ColorSpace: ["CIELab", "CIELch", "CIEXYZ", "Gray", "HSI", "HSV", "RGB",
+                   "Unknown"],
+      BitmapFormat: ["ARGB32", "Invalid", "RGB32"],
+      BitmapInterpolation: ["Bilinear", "NearestNeighbor"],
+      MaskMode: ["Default", "Invalid", "Multiply", "OverlayBlue", "OverlayCyan",
+                 "OverlayGreen", "OverlayMagenta", "OverlayOrange", "OverlayRed",
+                 "OverlayViolet", "OverlayYellow", "Replace"],
+      StdCursor: ["Accept", "Add", "Arrow", "ArrowQuestion", "ArrowWait",
+                  "BackwardDiagonalSize", "Checkmark", "CircleMinus",
+                  "CirclePlus", "ClosedHand", "Copy", "Cross", "Crossmark",
+                  "Default", "DownArrow", "Forbidden", "ForwardDiagonalSize",
+                  "Hand", "HorizontalSize", "HorizontalSplit", "Hourglass",
+                  "IBeam", "InvArrow", "LeftArrow", "NoCursor", "OpenHand",
+                  "PointingHand", "Reject", "RightArrow", "SizeAll",
+                  "SquareMinus", "SquarePlus", "UpArrow", "VerticalSize",
+                  "VerticalSplit", "Wait", "Watch"],
+      DataType: ["BigInt64Array", "BigUint64Array", "Boolean", "ByteArray",
+                 "Complex32", "Complex64", "Double", "Float", "Float32Array",
+                 "Float64Array", "Int16", "Int16Array", "Int32", "Int32Array",
+                 "Int64", "Int8", "Int8Array", "Matrix", "Real32", "Real64",
+                 "String", "String16", "String8", "UCString", "UTF16String",
+                 "UTF8String", "Uint16", "Uint16Array", "Uint32", "Uint32Array",
+                 "Uint64", "Uint8", "Uint8Array", "Uint8ClampedArray",
+                 "Undefined", "Vector"]
+   };
+   var bogus = [];
+   for (var cls in MEMBERS) {
+      var memberRe = new RegExp("(^|[^A-Za-z0-9_$.])" + cls
+                                + "\\.([A-Za-z_$][A-Za-z0-9_$]*)", "g");
+      var m;
+      while ((m = memberRe.exec(source)) !== null) {
+         if (MEMBERS[cls].indexOf(m[2]) < 0 && bogus.indexOf(cls + "." + m[2]) < 0) {
+            bogus.push(cls + "." + m[2]);
+         }
+      }
+   }
+   ok(bogus.length === 0,
+      "every constant is a member its class declares"
+      + (bogus.length > 0 ? ": " + bogus.join(", ") : ""));
 });
 
 //----------------------------------------------------------------------------
