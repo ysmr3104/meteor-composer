@@ -2512,6 +2512,9 @@ var MeteorComposerDialog = class extends Dialog {
       var outputPath = dlg.outputPath;
 
       this.cursor = new Cursor(StdCursor.Wait);
+      var restoreTitle = this.windowTitle;
+      var restoreButton = this.composeButton.text;
+      this.composeButton.enabled = false;
       try {
          this.compose(masterPath, outputPath, jobs);
       } catch (e) {
@@ -2519,6 +2522,9 @@ var MeteorComposerDialog = class extends Dialog {
                          TITLE, StdIcon.Error, StdButton.Ok)).execute();
       } finally {
          this.cursor = new Cursor(StdCursor.Arrow);
+         this.windowTitle = restoreTitle;
+         this.composeButton.text = restoreButton;
+         this.composeButton.enabled = true;
       }
    }
 
@@ -2604,7 +2610,26 @@ var MeteorComposerDialog = class extends Dialog {
 
       var composed = 0;
       var skipped = [];
+      var aborted = false;
       var W, H, channels;
+
+      // Progress goes to the Process Console, not only to a label in this
+      // dialog.
+      //
+      // The label was there and was missed: a minute passed with nothing to
+      // watch, and the wait cursor did not survive - opening an ImageWindow
+      // resets it - so there was no way to tell whether anything was
+      // happening. The console is where a PixInsight user looks for the
+      // progress of a batch, it stays on screen, and it ends up in the log
+      // file, which the message box does not: the list of frames left out used
+      // to vanish with the dialog that reported it.
+      console.show();
+      console.abortEnabled = true;
+      console.writeln("<end><cbr><b>MeteorComposer</b>: compositing "
+                      + jobs.length + " frames");
+      console.writeln("master: " + masterPath);
+      console.writeln("output: " + outputPath);
+      console.flush();
 
       try {
          var masterImage = masterWindow.mainView.image;
@@ -2635,11 +2660,37 @@ var MeteorComposerDialog = class extends Dialog {
 
          var combinedMask = new Float32Array(W * H);
 
+         var startedAt = Date.now();
+
          for (var k = 0; k < jobs.length; ++k) {
             var job = jobs[k];
+            var frameStarted = Date.now();
             this.progressLabel.text = "Compositing " + (k + 1) + " / " + jobs.length
                                     + "   " + job.file;
+            // Re-asserted every frame: opening an image window puts the cursor
+            // back to an arrow, so setting it once before the loop does not
+            // last.
+            this.cursor = new Cursor(StdCursor.Wait);
+
+            // The title bar and the button that was just pressed. Neither can
+            // be hidden: this dialog is often maximised, which puts the Process
+            // Console behind it, and the progress label lives at the top of the
+            // window while the button is at the bottom where the operator is
+            // looking.
+            var progress = (k + 1) + " / " + jobs.length;
+            this.windowTitle = TITLE + " - compositing " + progress;
+            this.composeButton.text = "Compositing " + progress;
+            console.write("<end><cbr>[" + (k + 1) + "/" + jobs.length + "] "
+                          + job.file + " ... ");
+            console.flush();
             CoreApplication.processEvents();
+
+            if (console.abortRequested) {
+               aborted = true;
+               console.writeln("");
+               console.warningln("aborted by the user");
+               break;
+            }
 
             // The corridor is where to look for the trail, not the mask. The
             // mask itself is built from the light, because the axis these
@@ -2656,10 +2707,12 @@ var MeteorComposerDialog = class extends Dialog {
                subWindow = ImageWindow.open(this.framePath(job.file))[0];
             } catch (e) {
                skipped.push(job.file + ": could not open");
+               console.warningln("could not open it");
                continue;
             }
             if (!subWindow) {
                skipped.push(job.file + ": could not open");
+               console.warningln("could not open it");
                continue;
             }
 
@@ -2669,8 +2722,10 @@ var MeteorComposerDialog = class extends Dialog {
                   // A cropped master against uncropped subs would put every
                   // mask in the wrong place, and the result would look like a
                   // mask bug rather than a mismatch.
-                  skipped.push(job.file + ": " + subImage.width + "x" + subImage.height
-                               + " does not match the master's " + W + "x" + H);
+                  var mismatch = subImage.width + "x" + subImage.height
+                               + " does not match the master's " + W + "x" + H;
+                  skipped.push(job.file + ": " + mismatch);
+                  console.warningln("LEFT OUT - " + mismatch);
                   continue;
                }
 
@@ -2688,13 +2743,41 @@ var MeteorComposerDialog = class extends Dialog {
                   // the frame is left out and the operator is told. Nothing
                   // was written for any channel.
                   skipped.push(job.file + ": " + outcome.reason);
+                  console.warningln("LEFT OUT - " + outcome.reason);
                   continue;
                }
 
                ++composed;
+               var lit = outcome.trails[0].channels;
+               var peaks = [];
+               for (var pc = 0; pc < lit.length; ++pc) {
+                  peaks.push(lit[pc].peak.toFixed(4));
+               }
+               console.writeln("ok  scale=" + outcome.fits[0].scale.toFixed(3)
+                               + "  peak=" + peaks.join("/")
+                               + "  mask=" + outcome.trails[0].coverage.touched + "px"
+                               + "  (" + (Date.now() - frameStarted) + " ms)");
             } finally {
                subWindow.forceClose();
             }
+         }
+
+         if (aborted) {
+            // Nothing is written. A composite holding the first few meteors
+            // and not the rest looks exactly like a finished one, and the
+            // operator asked for it to stop, not for a partial result.
+            console.writeln("<end><cbr>MeteorComposer: cancelled after "
+                            + composed + " of " + jobs.length
+                            + " frames. Nothing was written.");
+            console.flush();
+            this.progressLabel.text = "Composition cancelled after "
+                                    + composed + " / " + jobs.length;
+            (new MessageBox("Cancelled after " + composed + " of " + jobs.length
+                          + " frames.\n\nNothing was written: a composite with "
+                          + "only some of the meteors in it is "
+                          + "indistinguishable from a finished one.",
+                            TITLE, StdIcon.Information, StdButton.Ok)).execute();
+            return;
          }
 
          for (ch = 0; ch < channels; ++ch) {
@@ -2729,9 +2812,30 @@ var MeteorComposerDialog = class extends Dialog {
          if (skipped.length > 0) {
             message += "\n\nLeft out:\n  " + skipped.join("\n  ");
          }
+
+         // The same summary in the console, because the message box takes its
+         // copy with it when it closes.
+         console.writeln("<end><cbr>");
+         console.writeln("MeteorComposer: composited " + composed + " of "
+                         + jobs.length + " frames in "
+                         + ((Date.now() - startedAt) / 1000).toFixed(1) + " s");
+         console.writeln("  " + outputPath);
+         console.writeln("  " + maskPath);
+         console.writeln("  mask covers " + (coverage.fraction * 100).toFixed(3)
+                         + "% of the frame (" + coverage.touched + " pixels, "
+                         + coverage.solid + " solid)");
+         if (skipped.length > 0) {
+            console.warningln("  left out " + skipped.length + ":");
+            for (var sk = 0; sk < skipped.length; ++sk) {
+               console.warningln("    " + skipped[sk]);
+            }
+         }
+         console.flush();
+
          this.progressLabel.text = "Composited " + composed + " / " + jobs.length;
          (new MessageBox(message, TITLE, StdIcon.Information, StdButton.Ok)).execute();
       } finally {
+         console.abortEnabled = false;
          masterWindow.forceClose();
       }
    }
