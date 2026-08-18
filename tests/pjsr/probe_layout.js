@@ -254,12 +254,15 @@ try {
    say("  ERROR: " + e);
 }
 say("");
-
 //----------------------------------------------------------------------------
-// 6. All four edges plus the readout on ONE row: does it fit?
+// 6. The mask row as built: four edges of two spin boxes each, on ONE row
+//
+// This mirrors buildMaskRows() exactly. If the numbers fit at the dialog's
+// minimum width the row fits; if they do not, it is clipped in the window and
+// only a screenshot would say so.
 //----------------------------------------------------------------------------
 
-say("==== 6. Four edge cells on one row ====");
+say("==== 6. The mask row, one row of four edges ====");
 
 try {
    var host3 = new Control;
@@ -271,9 +274,10 @@ try {
    lab.setFixedWidth(58);
    row3.add(lab);
 
+   var radioW = Math.max(host3.font.width("Edges"), host3.font.width("Image")) + 30;
    var rb = new RadioButton(host3);
    rb.text = "Edges";
-   rb.setFixedWidth(host3.font.width("Edges") + 30);
+   rb.setFixedWidth(radioW);
    row3.add(rb);
 
    var names = ["Top", "Bottom", "Left", "Right"];
@@ -284,32 +288,33 @@ try {
       nameLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
       nameLabel.setFixedWidth(host3.font.width("Bottom:") + 6);
 
-      var p = new SpinBox(host3);
-      p.minValue = 0;
-      p.maxValue = 100;
-      p.suffix = " %";
-      p.value = 100;
+      var sa = new SpinBox(host3);
+      sa.setRange(0, 100);
+      sa.value = 100;
+      var sb = new SpinBox(host3);
+      sb.setRange(0, 100);
+      sb.value = 100;
 
-      var t = new SpinBox(host3);
-      t.minValue = -45;
-      t.maxValue = 45;
-      t.suffix = " deg";
-      t.value = -45;
+      var pcLabel = new Label(host3);
+      pcLabel.text = "%";
+      pcLabel.setFixedWidth(host3.font.width("%") + 4);
 
       var cell = new HorizontalSizer;
-      cell.spacing = 4;
+      cell.spacing = 2;
       cell.add(nameLabel);
-      cell.add(p);
-      cell.add(t);
+      cell.add(sa);
+      cell.add(sb);
+      cell.add(pcLabel);
       row3.add(cell);
       if (i < names.length - 1) {
-         row3.addSpacing(12);
+         row3.addSpacing(8);
       }
-      cells.push({ nameLabel: nameLabel, p: p, t: t });
+      cells.push({ nameLabel: nameLabel, a: sa, b: sb, pcLabel: pcLabel });
    }
    row3.addStretch();
    var readout2 = new Label(host3);
-   readout2.text = "Excluded: 100.0% of the frame";
+   readout2.text = "Excluded: 100.0%";
+   readout2.setFixedWidth(host3.font.width("Excluded: 100.0%") + 8);
    row3.add(readout2);
 
    host3.sizer = row3;
@@ -317,20 +322,113 @@ try {
 
    var used = lab.width + rb.width + readout2.width;
    for (i = 0; i < cells.length; ++i) {
-      used += cells[i].nameLabel.width + cells[i].p.width + cells[i].t.width;
+      used += cells[i].nameLabel.width + cells[i].a.width + cells[i].b.width
+            + cells[i].pcLabel.width;
       say("  " + pad(names[i], 8) + "label " + pad(cells[i].nameLabel.width, 5)
-          + "percent " + pad(cells[i].p.width, 5) + "tilt " + cells[i].t.width);
+          + "spin " + pad(cells[i].a.width, 5) + "spin " + pad(cells[i].b.width, 5)
+          + "unit " + cells[i].pcLabel.width);
    }
    say("  label " + lab.width + "  radio " + rb.width
-      + "  readout " + readout2.width);
-   say("  children total " + used + " of a 1780 container");
+       + "  readout " + readout2.width);
+   var spacing = 6 * 6 + 8 * 3 + 2 * 3 * 4;
+   say("  children " + used + " + spacing " + spacing + " = " + (used + spacing));
+   say("  available at the dialog minimum: 1152");
+   say((used + spacing <= 1152) ? "  PASS  the row fits at the minimum width"
+                                : "  FAIL  the row does NOT fit at the minimum width");
 
-   // The initial window is narrower than maximised: 1180 is the minimum size.
-   host3.setFixedWidth(1180);
+   host3.setFixedWidth(1152);
    host3.ensureLayoutUpdated();
-   say("  at 1180: readout " + readout2.width
-       + "  Right percent " + cells[3].p.width
-       + "  Right tilt " + cells[3].t.width);
+   say("  at 1152: readout " + readout2.width
+       + "  Right spins " + cells[3].a.width + "/" + cells[3].b.width
+       + "  (unchanged means nothing was squeezed)");
+} catch (e) {
+   say("  ERROR: " + e);
+}
+
+//----------------------------------------------------------------------------
+// 7. The file row, with Clear gone and the readout moved to the edges row
+//----------------------------------------------------------------------------
+
+say("");
+say("==== 7. The file row as built ====");
+
+try {
+   var host4 = new Control;
+   var sp = new Label(host4);
+   sp.text = "";
+   sp.setFixedWidth(58);
+   var radioW2 = Math.max(host4.font.width("Edges"), host4.font.width("Image")) + 30;
+   var radio2 = new RadioButton(host4);
+   radio2.text = "Image";
+   radio2.setFixedWidth(radioW2);
+   var edit2 = new Edit(host4);
+   edit2.readOnly = true;
+   var browse2 = new PushButton(host4);
+   browse2.text = "Browse...";
+
+   var row4 = new HorizontalSizer;
+   row4.spacing = 6;
+   row4.add(sp);
+   row4.add(radio2);
+   row4.add(edit2, 100);
+   row4.add(browse2);
+   host4.sizer = row4;
+   layout(host4, 1152);
+   say("  at 1152: spacer " + sp.width + "  radio " + radio2.width
+       + "  edit " + edit2.width + "  browse " + browse2.width);
+   var sum4 = sp.width + radio2.width + edit2.width + browse2.width + 18;
+   say((sum4 <= 1154) ? "  PASS  nothing overflows"
+                      : "  FAIL  overflow by " + (sum4 - 1152));
+} catch (e) {
+   say("  ERROR: " + e);
+}
+
+//----------------------------------------------------------------------------
+// 8. The preview toolbar, as ToolButtons
+//----------------------------------------------------------------------------
+
+say("");
+say("==== 8. The preview toolbar ====");
+
+try {
+   var host5 = new Control;
+   var texts = ["Fit", "1:1", "+", "-", "↶", "↷"];
+   var widest = 0;
+   for (i = 0; i < texts.length; ++i) {
+      widest = Math.max(widest, host5.font.width(texts[i]));
+   }
+   var row5 = new HorizontalSizer;
+   row5.spacing = 4;
+   var buttons = [];
+   for (i = 0; i < texts.length; ++i) {
+      var tbtn = new ToolButton(host5);
+      tbtn.text = texts[i];
+      tbtn.setFixedWidth(widest + 16);
+      buttons.push(tbtn);
+      row5.add(tbtn);
+   }
+   row5.addSpacing(10);
+   var lock = new CheckBox(host5);
+   lock.text = "Lock stretch";
+   row5.add(lock);
+   row5.addSpacing(10);
+   var frameLabel = new Label(host5);
+   frameLabel.text = "pct-2026-08-12_005232_ILCE-7M3_DSC04904_d_r.xisf   6024x4024   (first frame)";
+   row5.add(frameLabel, 100);
+   host5.sizer = row5;
+   layout(host5, 700);
+
+   var tsum = 0;
+   for (i = 0; i < buttons.length; ++i) {
+      tsum += buttons[i].width;
+   }
+   say("  each ToolButton " + buttons[0].width + ", six total " + tsum
+       + " (as PushButtons it was 6 x 102 = 612)");
+   say("  lock stretch " + lock.width + " (its text needs "
+       + host5.font.width("Lock stretch") + ")");
+   say("  frame label " + frameLabel.width + " (its text needs "
+       + host5.font.width(frameLabel.text) + ")");
+   say("  saved " + (612 - tsum) + " px, which is what was clipping the label");
 } catch (e) {
    say("  ERROR: " + e);
 }
