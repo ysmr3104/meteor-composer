@@ -239,7 +239,299 @@ function maskCoverage(field) {
    };
 }
 
+// --- The signal-driven mask -------------------------------------------------
+//
+// The capsule above assumes the axis is where the light is. Measured against
+// 31 accepted meteors, it is not: the endpoints come from the 1/8 detection
+// field, where each carries up to 4 px of quantisation, and a small error in
+// direction becomes a large displacement at the far end of a long trail.
+// The light-weighted offset from the assumed axis ran to 12 px, both as a
+// displacement and as a rotation, and one trail had 0% of its light within
+// 6 px of its own axis and 87% within 15.
+//
+// So the wide capsule was covering the trails only by being wide. Narrowing it
+// would have missed eight of the thirty-one rather than trimming them.
+//
+// This builds the mask from the light instead. The capsule becomes a corridor -
+// a bound on where to look, not a claim about where the trail is - and inside
+// it the mask is the region where the residual actually stands above the
+// noise. It follows a displaced axis, a curved trail and a flare alike,
+// because none of those are special cases to it.
+//
+// Two things keep it honest:
+//
+//   The residual is smoothed before thresholding. A trail's light is coherent
+//   across neighbouring pixels and noise is not, so smoothing raises the light
+//   relative to the noise by the square root of the kernel - which is what lets
+//   the threshold sit low enough to catch the faint edges of a trail without
+//   catching noise.
+//
+//   Only the region connected to the trail's core is kept. Isolated pixels that
+//   crossed the threshold by chance are not part of the meteor, and a mask that
+//   included them would put specks of sub-frame noise across the corridor.
+//   Hysteresis with the core as the seed, which is the standard shape of this
+//   problem.
+
+var DEFAULT_SIGNAL_OPTIONS = {
+   // Half-width of the corridor to search, in pixels. Wide enough to contain
+   // the worst measured axis error (12 px) with room to spare, and narrow
+   // enough that it cannot wander onto something unrelated.
+   corridorRadius: 25,
+
+   // Extension of the corridor along the axis past each endpoint, for the same
+   // reason the capsule had one: the endpoints are where the trail crossed the
+   // detection threshold, not where it stopped emitting.
+   corridorExtension: 25,
+
+   // Box smoothing radius. 2 gives a 5x5 kernel, which divides the noise by 5
+   // while leaving a trail one or two pixels wide clearly above it.
+   smoothRadius: 2,
+
+   // Thresholds, in multiples of the SMOOTHED noise. Light above kHigh is
+   // certainly the meteor and takes the mask to 1; below kLow it is not part
+   // of the mask at all; between them the mask fades, which is what feathers
+   // the edge. The fade needs no separate feather width: the light itself
+   // falls off smoothly, so a smooth threshold on it gives a smooth edge that
+   // ends exactly where the light does.
+   // Measured: with a low threshold of 2 the growth from the core picked up
+   // about 170 pixels of pure noise per trail, because 2.3% of a smoothed
+   // field stands above two deviations and eight-connected growth chains them
+   // together. At 3 that rate is 0.13%, an order of magnitude fewer, and what
+   // it gives up is the part of a trail's halo that is already below half the
+   // per-pixel noise.
+   kLow: 3.0,
+   kHigh: 5.0,
+
+   // The core is always covered, however faint. It guarantees that an accepted
+   // meteor always contributes something: if a trail were too faint to cross
+   // the threshold anywhere, a mask built only from the light would come out
+   // empty and the meteor would vanish from the composite without a word.
+   //
+   // It sits on the assumed axis, which the measurement says can be up to 12 px
+   // from the real trail, so on those it covers empty sky. That costs a strip
+   // six pixels wide of clipped noise - about 0.4 sigma, against a master noise
+   // three times larger - and it buys the guarantee above.
+   coreRadius: 3,
+   coreExtension: 6,
+
+   // Light above kHigh within this distance of the axis also seeds the region.
+   //
+   // Without it the core would be the only seed, and a trail displaced from
+   // its axis by more than the core's radius would only be found if its faint
+   // outskirts happened to reach back to the core. Sized to cover the worst
+   // measured axis error. Beyond it, light is still masked when it is
+   // CONNECTED to something that seeded - which is how a flare or a bright
+   // trail's halo gets covered - but it cannot start a region of its own,
+   // so a star residual out at the corridor's edge is not mistaken for the
+   // meteor.
+   seedRadius: 15
+};
+
+// Separable box smoothing over a rectangular buffer.
+function boxSmooth(data, width, height, radius) {
+   if (radius <= 0) {
+      return data;
+   }
+   var tmp = new Float32Array(width * height);
+   var out = new Float32Array(width * height);
+   var x, y, i, sum, count;
+
+   for (y = 0; y < height; ++y) {
+      var row = y * width;
+      for (x = 0; x < width; ++x) {
+         sum = 0;
+         count = 0;
+         var from = x - radius < 0 ? 0 : x - radius;
+         var to = x + radius >= width ? width - 1 : x + radius;
+         for (i = from; i <= to; ++i) {
+            sum += data[row + i];
+            ++count;
+         }
+         tmp[row + x] = sum / count;
+      }
+   }
+   for (x = 0; x < width; ++x) {
+      for (y = 0; y < height; ++y) {
+         sum = 0;
+         count = 0;
+         var yFrom = y - radius < 0 ? 0 : y - radius;
+         var yTo = y + radius >= height ? height - 1 : y + radius;
+         for (i = yFrom; i <= yTo; ++i) {
+            sum += tmp[i * width + x];
+            ++count;
+         }
+         out[y * width + x] = sum / count;
+      }
+   }
+   return out;
+}
+
+// The rectangle to search for one trail's light: the corridor's bounds.
+function corridorBounds(trail, imageWidth, imageHeight, options) {
+   var opt = mergeSignalOptions(options);
+   return maskBounds(trail, imageWidth, imageHeight,
+                     { coreRadius: opt.corridorRadius, coreScale: 0,
+                       featherWidth: 0, endExtension: opt.corridorExtension });
+}
+
+// A capsule covering the whole corridor, used to keep the trail out of the
+// linear fit and out of the local-background ring. Not the mask.
+function renderCorridorMask(trails, width, height, options) {
+   var opt = mergeSignalOptions(options);
+   return renderMask(trails, width, height,
+                     { coreRadius: opt.corridorRadius, coreScale: 0,
+                       featherWidth: 0, endExtension: opt.corridorExtension });
+}
+
+// Build one trail's mask from the light itself.
+//
+// `light` is the residual over `rect`, in rect-local order, already with the
+// local sky removed. `sigma` is its per-pixel noise. The returned array is
+// rect-local too: it is the caller that places it in the frame.
+function renderSignalMask(light, rect, trail, sigma, options) {
+   var opt = mergeSignalOptions(options);
+   var rw = rect.right - rect.left + 1;
+   var rh = rect.bottom - rect.top + 1;
+   var out = new Float32Array(rw * rh);
+   if (rw <= 0 || rh <= 0) {
+      return out;
+   }
+
+   var smoothed = boxSmooth(light, rw, rh, opt.smoothRadius);
+
+   // A box of (2r+1)^2 independent samples divides the noise by (2r+1).
+   var kernel = 2 * opt.smoothRadius + 1;
+   var sigmaSmoothed = sigma > 0 ? sigma / kernel : 0;
+   if (!(sigmaSmoothed > 0)) {
+      // With no noise estimate there is nothing to threshold against, so fall
+      // back to the geometric core alone rather than masking the whole
+      // corridor.
+      sigmaSmoothed = Infinity;
+   }
+
+   var low = opt.kLow * sigmaSmoothed;
+   var high = opt.kHigh * sigmaSmoothed;
+
+   var coreSegment = extendedSegment(trail, opt.coreExtension);
+   var corridor = extendedSegment(trail, opt.corridorExtension);
+
+   // Pass one: classify. `state` is 0 outside the corridor, 1 for a pixel that
+   // could belong (above kLow), 2 for a core pixel, which seeds the region.
+   var state = new Uint8Array(rw * rh);
+   var stack = [];
+   var x, y, i;
+   for (y = 0; y < rh; ++y) {
+      var iy = rect.top + y;
+      for (x = 0; x < rw; ++x) {
+         i = y * rw + x;
+         var ix = rect.left + x;
+         // The rectangle is axis-aligned and the trail usually is not, so its
+         // corners can be far outside the corridor. Distance decides, not the
+         // rectangle.
+         if (distanceToSegment(ix, iy, corridor.x0, corridor.y0,
+                               corridor.x1, corridor.y1) > opt.corridorRadius) {
+            continue;
+         }
+         var dCore = distanceToSegment(ix, iy, coreSegment.x0, coreSegment.y0,
+                                       coreSegment.x1, coreSegment.y1);
+         if (dCore <= opt.coreRadius) {
+            state[i] = 2;
+            stack.push(i);
+         } else if (smoothed[i] > low) {
+            state[i] = 1;
+            if (smoothed[i] > high && dCore <= opt.seedRadius) {
+               stack.push(i);
+            }
+         }
+      }
+   }
+
+   // Pass two: grow from the core over pixels above kLow, eight-connected.
+   // Anything above the threshold that does not touch the trail is not the
+   // trail.
+   var reached = new Uint8Array(rw * rh);
+   while (stack.length > 0) {
+      i = stack.pop();
+      if (reached[i]) {
+         continue;
+      }
+      reached[i] = 1;
+      var cy = Math.floor(i / rw);
+      var cx = i - cy * rw;
+      for (var dy = -1; dy <= 1; ++dy) {
+         var ny = cy + dy;
+         if (ny < 0 || ny >= rh) {
+            continue;
+         }
+         for (var dx = -1; dx <= 1; ++dx) {
+            var nx = cx + dx;
+            if (nx < 0 || nx >= rw) {
+               continue;
+            }
+            var ni = ny * rw + nx;
+            if (!reached[ni] && state[ni] > 0) {
+               stack.push(ni);
+            }
+         }
+      }
+   }
+
+   // Pass three: the mask value. Solid in the core, and elsewhere a smooth
+   // ramp between the two thresholds, which ends the mask exactly where the
+   // light ends.
+   for (i = 0; i < out.length; ++i) {
+      if (!reached[i]) {
+         continue;
+      }
+      if (state[i] === 2) {
+         out[i] = 1;
+         continue;
+      }
+      var t = (smoothed[i] - low) / (high - low);
+      out[i] = smoothstep(t);
+   }
+   return out;
+}
+
+// How much of the corridor the mask ended up using, as a check that it is
+// following light rather than filling the space it was given.
+function signalMaskCoverage(maskLocal, rect) {
+   var touched = 0;
+   var solid = 0;
+   var sum = 0;
+   for (var i = 0; i < maskLocal.length; ++i) {
+      if (maskLocal[i] > 0) {
+         ++touched;
+         sum += maskLocal[i];
+         if (maskLocal[i] >= 1) {
+            ++solid;
+         }
+      }
+   }
+   return { touched: touched, solid: solid, weightedArea: sum,
+            rectArea: maskLocal.length };
+}
+
 // --- Utility ----------------------------------------------------------------
+
+function mergeSignalOptions(options) {
+   if (options && options.__signalMerged) {
+      return options;
+   }
+   var out = { __signalMerged: true };
+   for (var k in DEFAULT_SIGNAL_OPTIONS) {
+      out[k] = DEFAULT_SIGNAL_OPTIONS[k];
+   }
+   if (options) {
+      for (var j in options) {
+         if (options[j] !== undefined) {
+            out[j] = options[j];
+         }
+      }
+   }
+   return out;
+}
+
 
 function mergeMaskOptions(options) {
    if (options && options.__merged) {
@@ -272,6 +564,12 @@ if (typeof module !== "undefined") {
       maskBounds: maskBounds,
       renderTrailMask: renderTrailMask,
       renderMask: renderMask,
-      maskCoverage: maskCoverage
+      maskCoverage: maskCoverage,
+      DEFAULT_SIGNAL_OPTIONS: DEFAULT_SIGNAL_OPTIONS,
+      boxSmooth: boxSmooth,
+      corridorBounds: corridorBounds,
+      renderCorridorMask: renderCorridorMask,
+      renderSignalMask: renderSignalMask,
+      signalMaskCoverage: signalMaskCoverage
    };
 }
