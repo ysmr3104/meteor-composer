@@ -127,6 +127,14 @@ PJSR スクリプトの出力は標準出力に出ません。ログとレポー
 
 - **`new Image(TypedArray, w, h, 3, ColorSpace.RGB)` の並びは planar**（`[R 全部][G 全部][B 全部]`）。
 
+- **`FileDialog.filters` は拡張子を配列の要素ごとに 1 つずつ渡す。** `[["Images", "*.xisf *.fit *.fits"]]` のようにスペース区切りの 1 文字列にすると**どのファイルにもマッチせず**、ダイアログにファイルが 1 つも出ない（フォルダだけが選べて `Open` が disable になる）。エラーは出ない。正しい形は `[["FITS Files", "*.fit", "*.fits", "*.fts"]]`。画像を選ばせるなら手書きせず `dlg.loadImageFilters()` を使う。
+
+- **`FileDialog.initialPath` はディレクトリ。** ファイル名まで含めたパスは同梱スクリプトに用例が無い（`sfd.initialPath = engine.params.workingDir`）。保存ダイアログでは `overwritePrompt = true` を明示すること。
+
+- **`fileName` / `fileNames` は非推奨。** 正は `filePath` / `filePaths`（`OpenFileDialog` / `SaveFileDialog` 双方）。
+
+- **`TextAlign` というクラスは存在しない。** 正は `TextAlignment`、垂直中央は `VerticalCenter`（`VertCenter` ではない）。旧定数の `TextAlign_Right` からアンダースコアを取っただけでは直らない。**存在しないクラスを参照すると構築時に例外が出て、ダイアログが黙って出ないだけになる。** `tests/ut/test_module_isolation.js` が静的に検査する。
+
 ## 検証は、バグが乗っている軸を畳み込んではいけない
 
 上の `apply()` のバグは、こちらの検証を一度すり抜けた。コンポジットの検査が**マスク内の加算量を 3 チャンネル通算で見ていた**ため、R だけが光を受け取り G と B がゼロの状態でも合計は正になり「PASS」と報告された。

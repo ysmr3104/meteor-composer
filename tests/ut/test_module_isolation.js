@@ -324,6 +324,43 @@ suite("V8 constant style", function () {
 
    ok(/^#engine v8\s*$/m.test(source.split("\n")[0]),
       "#engine v8 is on line 1");
+
+   // Renaming the underscore away is not enough: the class it belongs to has
+   // to be the one that exists. `TextAlign_Right` became `TextAlign.Right`
+   // here, and there is no TextAlign object in PJSR at all - the class is
+   // TextAlignment, and the flag is VerticalCenter rather than VertCenter.
+   // Both throw on construction, and PJSR reports that only in the Process
+   // Console, so from the outside the dialog simply does not appear.
+   //
+   // Checked against the names PJSR actually declares:
+   //   /Applications/PixInsight/doc/pjsr/objects/<Object>/<Object>.html
+   // There is a directory for TextAlignment and none for TextAlign.
+   var WRONG_CLASSES = {
+      "TextAlign": "TextAlignment",
+      "Align": "TextAlignment",
+      "Icon": "StdIcon",
+      "Button": "StdButton",
+      "Cursor": "StdCursor"
+   };
+   var wrong = [];
+   for (var name in WRONG_CLASSES) {
+      // The name as a whole identifier followed by a dot, not as the tail of a
+      // longer one: `TextAlignment.` must not match `TextAlign`.
+      var re = new RegExp("(^|[^A-Za-z0-9_$.])" + name + "\\.[A-Z]", "g");
+      var hit = source.match(re);
+      if (hit !== null) {
+         wrong.push(name + "." + " (" + hit.length + "x, meant "
+                    + WRONG_CLASSES[name] + ")");
+      }
+   }
+   ok(wrong.length === 0,
+      "constants use classes that exist"
+      + (wrong.length > 0 ? ": " + wrong.join(", ") : ""));
+
+   var vertCenter = source.match(/\bVertCenter\b/g);
+   ok(vertCenter === null,
+      "the vertical-centre flag is VerticalCenter"
+      + (vertCenter !== null ? " (" + vertCenter.length + " uses of VertCenter)" : ""));
 });
 
 //----------------------------------------------------------------------------
