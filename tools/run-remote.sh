@@ -95,9 +95,17 @@ sync_remote() {
    echo "==> リモート側の HEAD: $remote_sha"
 }
 
+# コマンドは標準入力から渡す。
+#
+# 以前は ssh "$REMOTE" "zsh -lc 'cd ... && $1'" と単一引用符で包んでいたが、
+# 引数自身をクォートすると引用符が入れ子になって壊れる（単一引用符は入れ子に
+# できない）。`--accept-regression="複数語の理由"` がこれで失敗した。
+#
+# 標準入力なら包む必要が無い。REMOTE_PATH に含まれる $HOME はリモートの
+# ログインシェルが展開する。
 run_remote() {
    echo "==> 実行 ($REMOTE): $1"
-   ssh "$REMOTE" "zsh -lc 'cd $REMOTE_PATH && $1'"
+   printf 'cd %s || exit 1\n%s\n' "$REMOTE_PATH" "$1" | ssh "$REMOTE" "zsh -l -s"
 }
 
 main() {
