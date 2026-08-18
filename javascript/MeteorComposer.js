@@ -999,6 +999,194 @@ var ModeDialog = class extends Dialog {
 // MeteorComposerDialog
 //============================================================================
 
+// ----------------------------------------------------------------------------
+// Where the composite comes from and where it goes
+//
+// Two native file dialogs used to do this - one to pick the master, one to
+// choose the output. That failed on the first contact with an operator, in two
+// ways worth remembering.
+//
+// The filters were written as [["Images", "*.xisf *.fit *.fits"]], one string
+// holding several patterns. PJSR wants one extension per array element, so that
+// filter matched nothing at all: the dialog showed no files, only folders, and
+// "Open" greyed out as soon as you entered one. Nothing was broken in any way
+// the code could notice - the dialog simply could not be used.
+//
+// And the shape was wrong regardless. Both paths are known before the operator
+// is asked anything: the master sits in a `master` directory beside the frames,
+// and the output belongs next to the session file that has been saving itself
+// all along. Asking through two modal dialogs, one after the other, hides that,
+// and it hides them from each other - you cannot see what master you chose
+// while you are choosing where to write. The operator's own suggestion, which
+// this follows, was to ask earlier and in one place.
+//
+// Both fields are editable text, so a path can be typed or pasted. That is not
+// a nicety: it is the way out when a file dialog will not cooperate.
+var ComposeDialog = class extends Dialog {
+   constructor(meteorCount, masterGuess, outputGuess) {
+      super();
+
+      var self = this;
+      this.masterPath = masterGuess || "";
+      this.outputPath = outputGuess || "";
+
+      this.windowTitle = "Compose meteor composite";
+
+      this.infoLabel = new Label(this);
+      this.infoLabel.useRichText = true;
+      this.infoLabel.wordWrapping = true;
+      this.infoLabel.text =
+         "<p><b>" + meteorCount + " accepted meteor"
+       + (meteorCount === 1 ? "" : "s") + "</b> will be added to the master "
+       + "light. The master is not modified: the result is written to the "
+       + "output file, with its mask beside it.</p>";
+      this.infoLabel.setMinWidth(560);
+
+      var labelWidth = 90;
+
+      this.masterLabel = new Label(this);
+      this.masterLabel.text = "Master light:";
+      this.masterLabel.textAlignment = TextAlignment.Right | TextAlignment.VerticalCenter;
+      this.masterLabel.setFixedWidth(labelWidth);
+
+      this.masterEdit = new Edit(this);
+      this.masterEdit.text = this.masterPath;
+      this.masterEdit.toolTip =
+         "<p>The master light the meteors are added to. Must have the same "
+       + "dimensions as the registered frames, so use the uncropped master: an "
+       + "autocropped one would put every mask in the wrong place.</p>";
+      this.masterEdit.onTextUpdated = function (text) {
+         self.masterPath = text.trim();
+      };
+
+      this.masterBrowse = new PushButton(this);
+      this.masterBrowse.text = "Browse...";
+      this.masterBrowse.onClick = function () {
+         var dlg = new OpenFileDialog;
+         dlg.caption = "Choose the master light";
+         dlg.multipleSelections = false;
+         // Every format PixInsight can read, from PixInsight itself. Writing
+         // the list by hand is how the filter came to match nothing.
+         dlg.loadImageFilters();
+         if (self.masterPath.length > 0) {
+            dlg.initialPath = directoryOf(self.masterPath);
+         }
+         if (dlg.execute()) {
+            self.masterPath = dlg.filePath;
+            self.masterEdit.text = self.masterPath;
+         }
+      };
+
+      var masterRow = new HorizontalSizer;
+      masterRow.spacing = 6;
+      masterRow.add(this.masterLabel);
+      masterRow.add(this.masterEdit, 100);
+      masterRow.add(this.masterBrowse);
+
+      this.outputLabel = new Label(this);
+      this.outputLabel.text = "Composite:";
+      this.outputLabel.textAlignment = TextAlignment.Right | TextAlignment.VerticalCenter;
+      this.outputLabel.setFixedWidth(labelWidth);
+
+      this.outputEdit = new Edit(this);
+      this.outputEdit.text = this.outputPath;
+      this.outputEdit.toolTip =
+         "<p>Where to write the composite. The mask is written beside it with "
+       + "_mask added to the name, because when a composite looks wrong the "
+       + "mask is the first thing to look at.</p>";
+      this.outputEdit.onTextUpdated = function (text) {
+         self.outputPath = text.trim();
+      };
+
+      this.outputBrowse = new PushButton(this);
+      this.outputBrowse.text = "Browse...";
+      this.outputBrowse.onClick = function () {
+         var dlg = new SaveFileDialog;
+         dlg.caption = "Save the composite as";
+         dlg.filters = [["XISF", "*.xisf"]];
+         dlg.overwritePrompt = true;
+         if (self.outputPath.length > 0) {
+            // A directory. A path with a file name on the end is not a
+            // documented use of initialPath.
+            dlg.initialPath = directoryOf(self.outputPath);
+         }
+         if (dlg.execute()) {
+            self.outputPath = dlg.filePath;
+            self.outputEdit.text = self.outputPath;
+         }
+      };
+
+      var outputRow = new HorizontalSizer;
+      outputRow.spacing = 6;
+      outputRow.add(this.outputLabel);
+      outputRow.add(this.outputEdit, 100);
+      outputRow.add(this.outputBrowse);
+
+      this.composeButton = new PushButton(this);
+      this.composeButton.text = "Compose";
+      this.composeButton.defaultButton = true;
+      this.composeButton.onClick = function () {
+         var problem = self.validate();
+         if (problem !== null) {
+            (new MessageBox(problem, TITLE, StdIcon.Warning,
+                            StdButton.Ok)).execute();
+            return;
+         }
+         self.ok();
+      };
+
+      this.cancelButton = new PushButton(this);
+      this.cancelButton.text = "Cancel";
+      this.cancelButton.onClick = function () {
+         self.cancel();
+      };
+
+      var buttons = new HorizontalSizer;
+      buttons.addStretch();
+      buttons.add(this.composeButton);
+      buttons.addSpacing(6);
+      buttons.add(this.cancelButton);
+
+      this.sizer = new VerticalSizer;
+      this.sizer.margin = 12;
+      this.sizer.spacing = 6;
+      this.sizer.add(this.infoLabel);
+      this.sizer.addSpacing(6);
+      this.sizer.add(masterRow);
+      this.sizer.add(outputRow);
+      this.sizer.addSpacing(10);
+      this.sizer.add(buttons);
+
+      this.adjustToContents();
+      this.setMinWidth(640);
+      // Paths are long and the fields hold text, so let it be widened.
+      this.userResizable = true;
+   }
+
+   // Checked here rather than after the operator has waited a minute for
+   // thirty frames to be read.
+   validate() {
+      if (this.masterPath.length === 0) {
+         return "Choose a master light.";
+      }
+      if (!File.exists(this.masterPath)) {
+         return "That master does not exist:\n" + this.masterPath;
+      }
+      if (this.outputPath.length === 0) {
+         return "Choose where to write the composite.";
+      }
+      var dir = directoryOf(this.outputPath);
+      if (dir.length > 0 && !File.directoryExists(dir)) {
+         return "That output directory does not exist:\n" + dir;
+      }
+      if (this.outputPath === this.masterPath) {
+         return "The composite would overwrite the master. Choose another "
+              + "output file.";
+      }
+      return null;
+   }
+};
+
 var MeteorComposerDialog = class extends Dialog {
    constructor(mode) {
       super();
@@ -1284,10 +1472,21 @@ var MeteorComposerDialog = class extends Dialog {
       }
 
       this.hidePersistentCheck = new CheckBox(this);
-      this.hidePersistentCheck.text = "Hide persistent tracks";
+      // "persistent" is the implementation's word and it does not survive
+      // contact with an operator: asked what it hid, the answer given was
+      // "fixed structures", which is a different thing entirely. Fixed
+      // structures are flagged `stationary` and are pushed down the ranking,
+      // never hidden - hiding them here would report them as satellites, and
+      // the reason an operator reads would be a lie.
+      this.hidePersistentCheck.text = "Hide satellites and aircraft";
       this.hidePersistentCheck.toolTip =
-         "<p>Hide candidates whose track spans more than maxMeteorFrames "
-       + "frames. Those are almost certainly satellites or aircraft.</p>";
+         "<p>Hide candidates whose track spans more frames than a meteor can: "
+       + "more than maxMeteorFrames. Those move smoothly across the session, "
+       + "which is a satellite or an aircraft.</p>"
+       + "<p>This does NOT hide fixed structures - candidates that sit still "
+       + "in registered coordinates, which are caused by stars. Those are "
+       + "scored down instead, because calling them satellites would be "
+       + "wrong.</p>";
       this.hidePersistentCheck.onCheck = function () {
          self.refreshList();
       };
@@ -1708,9 +1907,9 @@ var MeteorComposerDialog = class extends Dialog {
          return;
       }
       try {
-         var payload = JSON.parse(File.readTextFile(dlg.fileName));
+         var payload = JSON.parse(File.readTextFile(dlg.filePath));
          // Remembered so the autosave lands beside the results it belongs to.
-         this.resultsPath = dlg.fileName;
+         this.resultsPath = dlg.filePath;
          // Only a full path is usable here. `group` is the directory's name,
          // not a path, so adopting it would produce a path that resolves to
          // nothing and every frame would fail to open. Leave an
@@ -2188,15 +2387,19 @@ var MeteorComposerDialog = class extends Dialog {
       dlg.filters = [["JSON files", "*.json"]];
       // Offer the same name and place the autosave uses, so an explicit save
       // lands where the operator would go looking for it.
+      dlg.overwritePrompt = true;
+      // initialPath is a DIRECTORY. The shipped scripts all pass one
+      // (WeightsOptimizer-GUI.js: sfd.initialPath = engine.params.workingDir),
+      // and a path with a file name on the end is not a documented use.
       var suggested = this.autosavePath();
       if (suggested !== null) {
-         dlg.initialPath = suggested;
+         dlg.initialPath = directoryOf(suggested);
       }
       if (!dlg.execute()) {
          return;
       }
       try {
-         File.writeTextFile(dlg.fileName,
+         File.writeTextFile(dlg.filePath,
                             JSON.stringify(toSessionJSON(this.session), null, 2));
       } catch (e) {
          (new MessageBox("Could not write the session:\n" + e,
@@ -2216,13 +2419,13 @@ var MeteorComposerDialog = class extends Dialog {
       dlg.filters = [["JSON files", "*.json"]];
       var suggested = this.autosavePath();
       if (suggested !== null) {
-         dlg.initialPath = suggested;
+         dlg.initialPath = directoryOf(suggested);
       }
       if (!dlg.execute()) {
          return;
       }
       try {
-         var saved = JSON.parse(File.readTextFile(dlg.fileName));
+         var saved = JSON.parse(File.readTextFile(dlg.filePath));
          var out = applySessionJSON(this.session, saved);
          this.refreshList();
          // Orphans mean the detection has changed since the session was
@@ -2257,7 +2460,7 @@ var MeteorComposerDialog = class extends Dialog {
       try {
          var gt = toGroundTruth(this.session, { frameCount: frameCount },
                                 SCREEN_FACTOR, SCREEN_FACTOR);
-         File.writeTextFile(dlg.fileName, JSON.stringify(gt, null, 2));
+         File.writeTextFile(dlg.filePath, JSON.stringify(gt, null, 2));
       } catch (e) {
          (new MessageBox("Could not write the ground truth:\n" + e,
                          TITLE, StdIcon.Error, StdButton.Ok)).execute();
@@ -2299,33 +2502,98 @@ var MeteorComposerDialog = class extends Dialog {
          return;
       }
 
-      var masterDialog = new OpenFileDialog;
-      masterDialog.caption = "Choose the master light";
-      masterDialog.multipleSelections = false;
-      masterDialog.filters = [["Images", "*.xisf *.fit *.fits *.tif *.tiff"]];
-      if (!masterDialog.execute()) {
+      var dlg = new ComposeDialog(this.acceptedCount(),
+                                  this.guessMasterPath(),
+                                  this.guessOutputPath());
+      if (!dlg.execute()) {
          return;
       }
-
-      var saveDialog = new SaveFileDialog;
-      saveDialog.caption = "Save the composite as";
-      saveDialog.filters = [["XISF", "*.xisf"]];
-      if (this.registeredDir.length > 0) {
-         saveDialog.initialPath = directoryOf(this.registeredDir) + "/meteor_composite.xisf";
-      }
-      if (!saveDialog.execute()) {
-         return;
-      }
+      var masterPath = dlg.masterPath;
+      var outputPath = dlg.outputPath;
 
       this.cursor = new Cursor(StdCursor.Wait);
       try {
-         this.compose(masterDialog.fileName, saveDialog.fileName, jobs);
+         this.compose(masterPath, outputPath, jobs);
       } catch (e) {
          (new MessageBox("Composition failed:\n" + e,
                          TITLE, StdIcon.Error, StdButton.Ok)).execute();
       } finally {
          this.cursor = new Cursor(StdCursor.Arrow);
       }
+   }
+
+
+   // How many candidates were judged a meteor. `acceptedTrails` groups them by
+   // frame, so its length is a frame count, not a meteor count.
+   acceptedCount() {
+      var jobs = this.acceptedTrails();
+      var total = 0;
+      for (var i = 0; i < jobs.length; ++i) {
+         total += jobs[i].trails.length;
+      }
+      return total;
+   }
+
+   // The master light, guessed rather than asked for.
+   //
+   // WBPP puts it in a `master` directory beside `registered`, so the frames'
+   // own location says where to look. The uncropped one is preferred: an
+   // autocropped master has different dimensions from the subs, which would
+   // put every mask in the wrong place.
+   //
+   // Returns "" when there is nothing to go on, which leaves the field empty
+   // rather than filling it with a path that does not exist.
+   guessMasterPath() {
+      if (this.registeredDir.length === 0) {
+         return "";
+      }
+      var candidates = [];
+      var dir = this.registeredDir;
+      for (var up = 0; up < 3 && dir.length > 1; ++up) {
+         candidates.push(dir + "/master");
+         dir = directoryOf(dir);
+      }
+      for (var i = 0; i < candidates.length; ++i) {
+         var found = this.findMasterIn(candidates[i]);
+         if (found !== null) {
+            return found;
+         }
+      }
+      return "";
+   }
+
+   findMasterIn(dir) {
+      if (!File.directoryExists(dir)) {
+         return null;
+      }
+      var plain = null, autocrop = null;
+      var find = new FileFind;
+      if (find.begin(dir + "/*")) {
+         do {
+            if (find.isDirectory || !isRealXisf(find.name)) {
+               continue;
+            }
+            if (find.name.indexOf("autocrop") >= 0) {
+               if (autocrop === null) {
+                  autocrop = dir + "/" + find.name;
+               }
+            } else if (plain === null) {
+               plain = dir + "/" + find.name;
+            }
+         } while (find.next());
+      }
+      return plain !== null ? plain : autocrop;
+   }
+
+   // Beside the session file, which is where the operator has been watching
+   // their work save itself.
+   guessOutputPath() {
+      var session = this.autosavePath();
+      var dir = session !== null ? directoryOf(session) : this.registeredDir;
+      if (dir === null || dir.length === 0) {
+         return "";
+      }
+      return dir + "/meteor_composite.xisf";
    }
 
    compose(masterPath, outputPath, jobs) {
