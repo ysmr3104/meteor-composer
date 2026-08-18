@@ -1,8 +1,8 @@
 #engine v8
 
 #feature-id    MeteorComposer : Image Analysis > MeteorComposer | ysmrastro > MeteorComposer
-#feature-info  Detect meteors in a night's worth of registered frames and screen \
-   the candidates by eye. Phase 1: detection and screening only.
+#feature-info  Detect meteors in a night's worth of registered frames, screen \
+   the candidates by eye, and composite the accepted ones onto a master light.
 
 //============================================================================
 // MeteorComposer.js - Stage 1 (detection) and Stage 2 (screening UI)
@@ -1211,8 +1211,14 @@ var MeteorComposerDialog = class extends Dialog {
       this.windowTitle = TITLE + " " + VERSION + "  -  "
                        + (mode === MODE.GROUND_TRUTH ? "Ground truth" : "Screening");
 
+      // Replaced below by the width the columns actually need. 380 was a round
+      // number, and eight columns did not fit in it.
       this.listWidth = 380;
-      this.detailWidth = 360;
+      // Narrower than it was. Three panes shared a window, and with the list
+      // opened wide enough for its columns the preview - the pane the judgement
+      // is actually made in - was left the least of it. The splitter is there
+      // for an operator who wants it wider.
+      this.detailWidth = 280;
 
       this.buildSourceSection();
       this.buildListSection();
@@ -1270,6 +1276,17 @@ var MeteorComposerDialog = class extends Dialog {
       this.onKeyPress = keyHandler;
       this.candidateTree.onKeyPress = keyHandler;
       this.preview.onKeyPress = keyHandler;
+
+      // The list pane opens wide enough to hold its columns. Anything narrower
+      // and the operator meets a horizontal scrollbar before they meet the
+      // Score column, which is one of the two reasons the list is sorted at all.
+      //
+      // Before restoreSettings, so that an operator who has dragged the
+      // splitter keeps where they put it: a default may be improved, a choice
+      // may not.
+      if (this.columnsWidth > 0) {
+         this.setListWidth(this.columnsWidth + 24);
+      }
 
       this.restoreSettings();
       this.updateEnabled();
@@ -1421,7 +1438,9 @@ var MeteorComposerDialog = class extends Dialog {
       // it must not be present at all: showing the classifier's opinion while
       // someone labels the data it will be evaluated against makes the
       // evaluation circular (docs/tests.md 5-2).
-      this.columns = ["#", "File", "Len", "Ang", "Elong", "Track", "Verdict"];
+      // "Frame" rather than "File": the column holds a short tag, not a path.
+      // The full name is on the row as a tooltip and above the preview.
+      this.columns = ["#", "Frame", "Len", "Ang", "Elong", "Track", "Verdict"];
       if (modeShowsScores(this.mode)) {
          this.columns.splice(6, 0, "Score");
       }
@@ -1430,8 +1449,27 @@ var MeteorComposerDialog = class extends Dialog {
       for (var i = 0; i < this.columns.length; ++i) {
          this.candidateTree.setHeaderText(i, this.columns[i]);
       }
-      this.candidateTree.setColumnWidth(0, 46);
-      this.candidateTree.setColumnWidth(1, 210);
+
+      // Widths from the font rather than from round numbers. Fixed pixel counts
+      // were the reason the list needed a horizontal scrollbar: eight columns
+      // adding up to more than the pane, with the file column alone taking 210
+      // of it to show a 47-character name.
+      //
+      // Each column gets the wider of its header and the widest value it will
+      // hold, which is a measurement rather than an estimate.
+      var sample = { "#": "4999", "Frame": "DSC04908", "Len": "999.9",
+                     "Ang": "-179.9", "Elong": "99.9", "Track": "still x99",
+                     "Score": "0.999", "Verdict": "not meteor" };
+      var totalWidth = 0;
+      for (i = 0; i < this.columns.length; ++i) {
+         var name = this.columns[i];
+         var text = sample[name] === undefined ? name : sample[name];
+         var w = Math.max(this.font.width(name), this.font.width(text)) + 16;
+         this.candidateTree.setColumnWidth(i, w);
+         totalWidth += w;
+      }
+      // Remembered so the pane can be opened wide enough to hold them all.
+      this.columnsWidth = totalWidth;
 
       // Column 0 holds the row's position in the displayed list, one-based,
       // which is also the number drawn on the preview.
@@ -1559,6 +1597,9 @@ var MeteorComposerDialog = class extends Dialog {
       this.sortLabel.text = "Sort:";
       this.sortLabel.textAlignment = TextAlignment.Right | TextAlignment.VerticalCenter;
 
+      // A combo box is horizontally expandable, so without a stretch at the end
+      // of the row the two of them share out all the spare width and the row
+      // still runs past the pane. The stretch takes it instead.
       var controls = new HorizontalSizer;
       controls.spacing = 6;
       controls.add(this.showLabel);
@@ -1566,19 +1607,28 @@ var MeteorComposerDialog = class extends Dialog {
       controls.addSpacing(8);
       controls.add(this.sortLabel);
       controls.add(this.sortCombo);
+      controls.addStretch();
 
       var controls2 = new HorizontalSizer;
       controls2.spacing = 6;
       controls2.add(this.presetLabel);
       controls2.add(this.presetCombo);
-      controls2.addSpacing(8);
-      controls2.add(this.hidePersistentCheck);
       controls2.addStretch();
+
+      // Its own row. Beside the cutoff combo it was cut off mid-word - "Hide
+      // satellites and aircra" - and a control whose label is truncated is a
+      // control nobody dares press. The rename that made it readable also made
+      // it longer, so it no longer shares a line with anything.
+      var controls3 = new HorizontalSizer;
+      controls3.spacing = 6;
+      controls3.add(this.hidePersistentCheck);
+      controls3.addStretch();
 
       this.listSizer = new VerticalSizer;
       this.listSizer.spacing = 4;
       this.listSizer.add(controls);
       this.listSizer.add(controls2);
+      this.listSizer.add(controls3);
       this.listSizer.add(this.candidateTree, 100);
    }
 
@@ -1653,6 +1703,20 @@ var MeteorComposerDialog = class extends Dialog {
 
       this.frameLabel = new Label(this);
       this.frameLabel.text = "";
+
+      // Fixed to the width of their own labels.
+      //
+      // A PushButton asks for a comfortable minimum width, and six of them
+      // asking for it filled the preview pane and pushed "Lock stretch" off the
+      // right-hand edge. These labels are one to three characters; sized to what
+      // they hold, all six fit with room to spare.
+      var toolButtons = [this.fitButton, this.zoom11Button, this.zoomInButton,
+                         this.zoomOutButton, this.rotateLeftButton,
+                         this.rotateRightButton];
+      for (var tb = 0; tb < toolButtons.length; ++tb) {
+         toolButtons[tb].setFixedWidth(
+            Math.max(28, this.font.width(toolButtons[tb].text) + 14));
+      }
 
       var toolbar = new HorizontalSizer;
       toolbar.spacing = 4;
@@ -2105,11 +2169,15 @@ var MeteorComposerDialog = class extends Dialog {
          // ordering is done in sortRows(), so this is always the row's real
          // position, and the same number is drawn on the preview.
          node.setText(0, "" + (i + 1));
-         node.setText(1, row.file);
+         node.setText(1, frameTag(row.file));
+         // The whole name is still reachable: it is what an operator needs when
+         // they go looking for the frame on disk.
+         node.setToolTip(1, row.file);
          node.setText(2, row.candidate.length.toFixed(1));
          node.setText(3, row.candidate.angle.toFixed(1));
          node.setText(4, row.candidate.elongation.toFixed(1));
          node.setText(5, this.trackText(row));
+         node.setToolTip(5, this.trackToolTip(row));
          var col = 6;
          if (modeShowsScores(this.mode)) {
             node.setText(col++, row.score === undefined ? "-" : row.score.toFixed(3));
@@ -2138,10 +2206,24 @@ var MeteorComposerDialog = class extends Dialog {
    // it. It says nothing to the person reading the list. "same place" is the
    // observation, and it is what makes the row worth ignoring.
    trackText(row) {
+      // Short, because it shares a pane with seven other columns. The sentence
+      // that explains it is one hover away, on the cell.
       if (row.stationary) {
-         return "same place x" + row.fixedCount;
+         return "still x" + row.fixedCount;
       }
       return "" + row.trackLength + (row.persistent ? " *" : "");
+   }
+
+   // What the Track column means for this row, in words.
+   trackToolTip(row) {
+      if (row.scoreReasons !== undefined && row.scoreReasons !== null
+          && row.scoreReasons.length > 0) {
+         return "<p>" + row.scoreReasons.join("</p><p>") + "</p>";
+      }
+      if (row.trackLength > 1) {
+         return "<p>Matched in " + row.trackLength + " frames.</p>";
+      }
+      return "<p>Seen in this frame only, which is what a meteor does.</p>";
    }
 
    verdictText(verdict) {
