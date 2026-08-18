@@ -530,12 +530,19 @@ function noDataMask(field, dilate) {
 //
 // The judgement is left to the classifier, where it becomes a score and a reason
 // the operator can read, instead of a candidate that silently never existed.
+// `pixels` are the {x, y, w} objects connectedComponents produces, not indices.
+// Written for indices first, which made pixels[i] % width a NaN, usable[NaN] an
+// undefined, and every pixel of every candidate "next to no data" - so THIRTEEN
+// of the thirty-one ground-truth meteors, three of them from the recall gate,
+// were being scored as artefacts. The unit test passed throughout, because it
+// was written against the same wrong assumption and handed the function plain
+// indices. It now builds its pixels with connectedComponents.
 function edgeContact(pixels, usable, width, height, reach) {
    var r = reach === undefined ? 2 : Math.max(1, Math.floor(reach));
    var touching = 0;
    for (var i = 0; i < pixels.length; ++i) {
-      var x = pixels[i] % width;
-      var y = (pixels[i] - x) / width;
+      var x = pixels[i].x;
+      var y = pixels[i].y;
       var near = false;
       for (var dy = -r; dy <= r && !near; ++dy) {
          for (var dx = -r; dx <= r; ++dx) {

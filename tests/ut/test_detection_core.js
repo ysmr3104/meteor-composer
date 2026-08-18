@@ -553,17 +553,38 @@ suite("edgeContact separates lying along the boundary from touching it", functio
    }
    var usable = core.noDataMask(f, 1).usable;
 
-   // Along the boundary: a vertical line in the first usable column.
-   var along = [];
-   for (y = 10; y < 30; ++y) {
-      along.push(y * w + 5);
+   // The pixels come from connectedComponents, not from a list written here.
+   //
+   // The first version of this test built them as plain indices, which is what
+   // the function was written to expect - and both were wrong. Components carry
+   // {x, y, w} objects, so every pixel read as NaN, every lookup came back
+   // undefined, and every candidate measured as lying entirely along the
+   // boundary. Thirteen of the thirty-one ground-truth meteors were being
+   // scored as artefacts and this test said nothing, because it agreed with the
+   // mistake.
+   //
+   // Taking the pixels from the real producer is what makes it a test of the
+   // interface rather than of one side's opinion of it.
+   function pixelsOf(binary) {
+      var cc = core.connectedComponents(binary, w, h, 8);
+      ok(cc.components.length === 1,
+         "the fixture is one component (" + cc.components.length + ")");
+      return cc.components[0].pixels;
    }
 
-   // Across it: a horizontal line starting at the same column and running away.
-   var across = [];
-   for (x = 5; x < 45; ++x) {
-      across.push(20 * w + x);
+   // Along the boundary: a vertical line in the first usable column.
+   var alongBinary = new Uint8Array(w * h);
+   for (y = 10; y < 30; ++y) {
+      alongBinary[y * w + 5] = 1;
    }
+   var along = pixelsOf(alongBinary);
+
+   // Across it: a horizontal line starting at the same column and running away.
+   var acrossBinary = new Uint8Array(w * h);
+   for (x = 5; x < 45; ++x) {
+      acrossBinary[20 * w + x] = 1;
+   }
+   var across = pixelsOf(acrossBinary);
 
    var alongFraction = core.edgeContact(along, usable, w, h, 2);
    var acrossFraction = core.edgeContact(across, usable, w, h, 2);

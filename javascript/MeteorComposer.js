@@ -1972,6 +1972,7 @@ var MeteorComposerDialog = class extends Dialog {
                record.sigma = r.sigma;
                record.median = r.median;
                record.componentCount = r.componentCount;
+               record.noDataSamples = r.noDataSamples;
             } else {
                record.error = "could not open";
             }
