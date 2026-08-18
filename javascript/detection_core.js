@@ -32,7 +32,7 @@ function makeField(width, height) {
 // mode:
 //   "mean"   flux preserving, keeps thin features visible
 //   "median" rejects thin features, which is what a background model wants
-function downsample(field, factor, mode) {
+function downsample(field, factor, mode, mask) {
    if (factor < 1) {
       throw new Error("downsample: factor must be >= 1");
    }
@@ -54,6 +54,15 @@ function downsample(field, factor, mode) {
          for (var y = y0; y < y1; ++y) {
             var row = y * field.width;
             for (var x = x0; x < x1; ++x) {
+               // A masked sample takes no part. For the background model this
+               // is the whole point: a block straddling the edge of the data
+               // would otherwise take the median of a mixture of sky and
+               // nothing, which is lower than the sky - and subtracting a
+               // background that is too low leaves the sky standing above zero
+               // in a line along that edge. See noDataMask.
+               if (mask && !mask[row + x]) {
+                  continue;
+               }
                var v = field.data[row + x];
                if (mode === "median") {
                   block.push(v);
@@ -63,7 +72,12 @@ function downsample(field, factor, mode) {
                ++n;
             }
          }
-         out.data[by * outW + bx] = (mode === "median") ? medianOf(block) : (n > 0 ? sum / n : 0);
+         // A block with nothing usable in it is left at zero. Nothing is
+         // detected there either, so the value cannot matter; what would
+         // matter is inventing one.
+         out.data[by * outW + bx] = (mode === "median")
+            ? (block.length > 0 ? medianOf(block) : 0)
+            : (n > 0 ? sum / n : 0);
       }
    }
    return out;
@@ -108,8 +122,8 @@ function upsample(field, width, height) {
 // Median reduction is what makes this safe for our purpose. A meteor occupies
 // a small fraction of any block it crosses, so it does not survive into the
 // model and is therefore not subtracted away from the residual.
-function removeBackground(field, factor) {
-   var coarse = downsample(field, factor, "median");
+function removeBackground(field, factor, mask) {
+   var coarse = downsample(field, factor, "median", mask);
    var model = upsample(coarse, field.width, field.height);
    var out = makeField(field.width, field.height);
    for (var i = 0; i < field.data.length; ++i) {
@@ -388,7 +402,21 @@ var DEFAULT_OPTIONS = {
    connectivity: 8,
    minPixels: 12,         // reject cosmic-ray hits and single hot pixels
    minElongation: 6.0,    // stars sit near 1; a meteor is tens to hundreds
-   minLength: 10.0        // in samples of the working (downsampled) field
+   minLength: 10.0,       // in samples of the working (downsampled) field
+
+   // Keep the samples that hold no data out of the background model and the
+   // statistics. WBPP leaves them wherever registration moved a frame off the
+   // canvas; see noDataMask for what including them costs.
+   excludeNoData: true,
+
+   // How far the exclusion extends past a sample with no data, in samples. One
+   // covers the ring that straddles the boundary and holds a fraction of the
+   // sky.
+   noDataDilation: 1,
+
+   // How close to the edge of the data a candidate's pixel counts as touching
+   // it, when measuring edgeContact.
+   edgeContactReach: 2
 };
 
 function mergeDetectionOptions(options) {
@@ -406,14 +434,162 @@ function mergeDetectionOptions(options) {
    return out;
 }
 
+// Samples that hold no data at all.
+//
+// WBPP writes registered frames into a fixed canvas, so wherever the alignment
+// moved a frame off that canvas there is nothing: exactly zero. On this night
+// one frame in a handful carried a diagonal wedge of it covering nearly 40% of
+// the field, and every frame carried a strip a few samples wide down one side.
+// It is a property of the output, not a fault to be fixed upstream.
+//
+// It has to be kept out of two calculations.
+//
+// The background model, first and most importantly. A median over a block that
+// straddles the edge of the data comes out between the sky and nothing, so
+// subtracting it leaves the sky standing above zero along that edge - and a line
+// detector then finds that edge, correctly, as a line. Six of the candidates an
+// operator reported as obviously-not-meteors were exactly this: one sample wide,
+// running parallel to an edge.
+//
+// And the robust statistics. Measured on a frame that was 38% empty, the MAD
+// came out 6.50e-5 against 2.39e-5 over the sky alone - the spread between two
+// populations, not the noise of either - which put the threshold 29% too high
+// and made the whole frame LESS sensitive. That direction was a surprise: the
+// guess had been that a dark region drags the median down and makes it
+// over-sensitive. It does drag the median down, and the MAD swamps it.
+//
+// Returned in the same sense as the mask detectCandidates already takes: 1
+// means usable. `dilate` extends it over the samples that straddle the edge,
+// which hold a fraction of the sky and are not representative of either side.
+function noDataMask(field, dilate) {
+   var reach = dilate === undefined ? 1 : Math.max(0, Math.floor(dilate));
+   var empty = new Uint8Array(field.data.length);
+   var found = 0;
+   var i;
+   for (i = 0; i < field.data.length; ++i) {
+      // EXACTLY zero, or not a number at all. Nothing weaker will do.
+      //
+      // "Not positive" was tried first and it is wrong: sky noise about a
+      // subtracted background is negative half the time, so on a field like
+      // that it marked half the samples as missing and, with the dilation,
+      // left nothing to detect in. Registration writes exact zeros where the
+      // canvas has no frame under it, and a sample averaging sixty-four such
+      // pixels is exactly zero too. Noise essentially never is.
+      var v = field.data[i];
+      if (v === 0 || !isFinite(v)) {
+         empty[i] = 1;
+         ++found;
+      }
+   }
+
+   var usable = new Uint8Array(field.data.length);
+   for (i = 0; i < usable.length; ++i) {
+      usable[i] = 1;
+   }
+
+   // Only meaningful when most of the field holds sky. A frame with holes in it
+   // is what this is for; a field that is mostly at or below zero is something
+   // else - a synthetic fixture built on a zero background, or a frame whose
+   // calibration went wrong - and calling nearly all of it "no data" would
+   // leave nothing to detect in and nothing to compute statistics from.
+   //
+   // Doing nothing is the right answer there. Guessing is not.
+   if (found === 0 || found * 2 >= field.data.length) {
+      return { usable: usable, emptyCount: found, applied: false };
+   }
+
+   for (var y = 0; y < field.height; ++y) {
+      for (var x = 0; x < field.width; ++x) {
+         if (!empty[y * field.width + x]) {
+            continue;
+         }
+         var yFrom = Math.max(0, y - reach), yTo = Math.min(field.height - 1, y + reach);
+         var xFrom = Math.max(0, x - reach), xTo = Math.min(field.width - 1, x + reach);
+         for (var ny = yFrom; ny <= yTo; ++ny) {
+            for (var nx = xFrom; nx <= xTo; ++nx) {
+               usable[ny * field.width + nx] = 0;
+            }
+         }
+      }
+   }
+   return { usable: usable, emptyCount: found, applied: true };
+}
+
+// How much of a candidate lies along the edge of the data.
+//
+// Measured, rather than turned into a rejection here, because the obvious
+// rejection is wrong: a candidate NEAR an edge is not suspicious. A visual
+// meteor of this night - one of the nine the recall gate rests on - comes within
+// 4 px of the border, and two more meteors do as well. Excluding a band along
+// the edge would take them with it.
+//
+// What separates them is whether the candidate runs ALONG the boundary or merely
+// touches it. Measured over the eight reported artefacts and four meteors, this
+// came out 49% to 100% for the artefacts and 0% to 5% for the meteors, so the
+// two do not overlap and the number is worth carrying.
+//
+// The judgement is left to the classifier, where it becomes a score and a reason
+// the operator can read, instead of a candidate that silently never existed.
+function edgeContact(pixels, usable, width, height, reach) {
+   var r = reach === undefined ? 2 : Math.max(1, Math.floor(reach));
+   var touching = 0;
+   for (var i = 0; i < pixels.length; ++i) {
+      var x = pixels[i] % width;
+      var y = (pixels[i] - x) / width;
+      var near = false;
+      for (var dy = -r; dy <= r && !near; ++dy) {
+         for (var dx = -r; dx <= r; ++dx) {
+            var nx = x + dx, ny = y + dy;
+            // Beyond the array there is no data either, and a candidate lying
+            // along the outermost column is the same finding as one lying along
+            // a wedge.
+            if (nx < 0 || ny < 0 || nx >= width || ny >= height) {
+               near = true;
+               break;
+            }
+            if (!usable[ny * width + nx]) {
+               near = true;
+               break;
+            }
+         }
+      }
+      if (near) {
+         ++touching;
+      }
+   }
+   return pixels.length > 0 ? touching / pixels.length : 0;
+}
+
 // Run the screening pass over one field.
 //
 // mask, if given, is a Uint8Array of the same length as field.data where 0
 // marks samples to exclude. It is applied before the statistics are computed.
 function detectCandidates(field, options, mask) {
    var opt = mergeDetectionOptions(options);
-   var flat = removeBackground(field, opt.backgroundFactor);
-   var th = threshold(flat, opt.k, mask);
+
+   // The samples that hold no data, combined with whatever the caller excluded.
+   //
+   // They are kept out of the background model and out of the statistics, and
+   // NOT out of the thresholding: a meteor is allowed to reach the edge of the
+   // frame, and several real ones do.
+   var noData = opt.excludeNoData
+      ? noDataMask(field, opt.noDataDilation)
+      : { usable: null, emptyCount: 0, applied: false };
+   if (!noData.applied) {
+      noData = { usable: null, emptyCount: noData.emptyCount, applied: false };
+   }
+   var usable = noData.usable;
+   if (usable !== null && mask) {
+      usable = new Uint8Array(usable.length);
+      for (var u = 0; u < usable.length; ++u) {
+         usable[u] = (noData.usable[u] && mask[u]) ? 1 : 0;
+      }
+   } else if (usable === null) {
+      usable = mask ? mask : null;
+   }
+
+   var flat = removeBackground(field, opt.backgroundFactor, usable);
+   var th = threshold(flat, opt.k, usable);
    var cc = connectedComponents(th.binary, field.width, field.height, opt.connectivity);
 
    var candidates = [];
@@ -440,6 +616,11 @@ function detectCandidates(field, options, mask) {
          pixelCount: pixels.length,
          majorLength: m.majorLength,
          minorLength: m.minorLength,
+         // How much of it lies along the edge of the data. Recorded, not acted
+         // on: see edgeContact.
+         edgeContact: noData.usable === null ? 0
+            : edgeContact(pixels, noData.usable, field.width, field.height,
+                          opt.edgeContactReach),
          // For the UI overlay: axis-aligned box for hit-testing, and the
          // oriented box is (cx, cy, angle, majorLength, minorLength).
          bbox: computeBoundingBox(pixels)
@@ -450,7 +631,8 @@ function detectCandidates(field, options, mask) {
       level: th.level,
       sigma: th.stats.sigma,
       median: th.stats.median,
-      componentCount: cc.components.length
+      componentCount: cc.components.length,
+      noDataSamples: noData.emptyCount
    };
 }
 
@@ -464,6 +646,8 @@ if (typeof module !== "undefined") {
       removeBackground: removeBackground,
       medianOf: medianOf,
       mad: mad,
+      noDataMask: noDataMask,
+      edgeContact: edgeContact,
       threshold: threshold,
       connectedComponents: connectedComponents,
       computeMoments: computeMoments,
