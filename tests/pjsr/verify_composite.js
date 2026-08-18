@@ -146,9 +146,9 @@ function main() {
       }
       log("  mask covers:            " + (maskTouched / n * 100).toFixed(3)
           + "% of the frame (" + maskTouched + " pixels, " + maskSolid + " solid)");
-      log("  The trail's light was measured to be gone by 20 px from the axis");
-      log("  (tests/pjsr/probe_trail_profile.js). A mask far larger than that");
-      log("  is copying sub-frame noise into the master for nothing.");
+      log("  The mask is built from the light rather than from the assumed");
+      log("  axis (requirements.md 7.1.11), so most of what it covers should");
+      log("  be solid: a mask that is mostly fade is one that found little.");
 
       section("1. Outside the mask, the composite must equal the master");
 
