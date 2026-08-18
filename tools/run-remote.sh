@@ -146,10 +146,15 @@ main() {
          # シェルが空白で再分割するため、`--accept-regression="複数語の理由"`
          # のような引数が壊れる（実際に壊れて、理由の 2 語目がファイル名と
          # して解釈された）。
+         #
+         # printf '%q' は使わない。bash の %q は非 ASCII を $'\xNN' 形式に
+         # 変換し、リモートの zsh -lc に渡すと復元されない（UTF-8 の理由文が
+         # 化けた）。単一引用符で囲み、中の単一引用符だけを退避する方式は
+         # バイト列をそのまま通す。
          local quoted=""
          local arg
          for arg in "$@"; do
-            quoted="$quoted $(printf '%q' "$arg")"
+            quoted="$quoted '$(printf '%s' "$arg" | sed "s/'/'\\\\''/g")'"
          done
          run_remote "$quoted"
          ;;
