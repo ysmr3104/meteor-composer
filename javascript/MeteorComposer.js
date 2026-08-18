@@ -71,6 +71,12 @@
 // hundreds of megabytes to answer questions asked at 1/8 scale.
 #define MASK_FILE_MAX_SIDE 1024
 
+// What the readout says when Image is selected but the file cannot be read. It
+// is a #define because the readout carries a fixed width - so that a growing
+// number cannot squeeze the spin boxes next to it - and every text it can hold
+// has to be measured when that width is set.
+#define MASK_UNREADABLE "Mask image unreadable"
+
 //============================================================================
 // PJSR layer: frames on disk
 //============================================================================
@@ -1688,7 +1694,9 @@ var MeteorComposerDialog = class extends Dialog {
        + "sign of it - the candidate list simply comes back shorter.</p>";
       // Fixed to its widest text, so it cannot squeeze the row's other items
       // when the number grows.
-      this.maskReadout.setFixedWidth(this.font.width("Excluded: 100.0%") + 8);
+      this.maskReadout.setFixedWidth(
+         Math.max(this.font.width("Excluded: 100.0%"),
+                  this.font.width(MASK_UNREADABLE)) + 8);
 
       var rowEdges = new HorizontalSizer;
       rowEdges.spacing = 6;
@@ -2445,7 +2453,7 @@ var MeteorComposerDialog = class extends Dialog {
       var mask = this.maskForField(fw, fh);
       if (mask === null) {
          this.maskReadout.text = (this.maskMode === "file" && this.maskFilePath.length > 0)
-            ? "Excluded: none - the mask image could not be read"
+            ? MASK_UNREADABLE
             : "Excluded: none";
          this.preview.setMask(null);
          return;

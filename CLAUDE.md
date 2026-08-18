@@ -169,6 +169,12 @@ PJSR スクリプトの出力は標準出力に出ません。ログとレポー
 
 - **`CoreApplication.versionString` / `.version` は存在しない**（どちらも `undefined`。実測）。
 
+- **`PushButton` の最小幅は 102 px で、`setFixedWidth` では下げられない。** `setFixedWidth` は `maxWidth` を設定するが `minWidth` はスタイル由来の 102 のまま残るので、**要求より広い 102 px で出る**（実測: 要求 25 / min 102 / max 25 / 実際 102）。「文字幅に合わせる」という修正を入れたことがあるが、**一度も効いていなかった**。1〜3 文字のボタンを並べるなら **`ToolButton` を使う**（要求どおりの幅になる。同じ文字列で 24〜62 px）。`tests/pjsr/probe_layout.js`
+
+- **`SpinBox` は負の値を持てない。** `minValue = -45` でも `setRange(-45, 45)` でも `minValue` は 0 になり、**例外も警告も出ない**。符号付きの量をスピンボタンで入力させることはできないので、入力の形を非負に組み替えるしかない（除外マスクの「深さ + 傾き」を「両端の深さ」に変えたのはこれが理由）。`suffix` / `prefix` / `stepSize` / `autoAdjustWidth` は使える。`tests/pjsr/probe_layout.js`
+
+- **レイアウトは GUI なしで実測できる。** `Control` に本物の sizer を持たせて `adjustToContents()` → `setFixedWidth(幅)` → `ensureLayoutUpdated()` すると、ウィンドウ無しでレイアウトが走り各子の `width` / `minWidth` / `maxWidth` が読める。**スクリーンショットで報告を受ける前に、行が最小ウィンドウ幅で収まるかを数字で確かめられる。** `tests/pjsr/probe_layout.js`
+
 - **`Bitmap.fill(x0, y0, x1, y1, value)` の `x1` / `y1` は排他**（`Rect` と同じ）。画素 `x0..x1` を塗るなら `fill(x0, y, x1 + 1, y + 1, value)`。アルファは保持され、`drawScaledBitmap` は合成する（実測: `0xff204080` に `0x5aa050ff` を重ねて `0xff4d46ad`）。`tests/pjsr/probe_mask.js`
 
 ## MeteorComposer.js の構文は自動で検査される
