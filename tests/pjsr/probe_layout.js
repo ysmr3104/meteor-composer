@@ -262,89 +262,113 @@ say("");
 // only a screenshot would say so.
 //----------------------------------------------------------------------------
 
-say("==== 6. The mask row, one row of four edges ====");
+say("==== 6. The mask row: depth, tilt and direction per edge ====");
 
-try {
-   var host3 = new Control;
-   var row3 = new HorizontalSizer;
-   row3.spacing = 6;
+// One row of four cells was measured at 1203-1235 px against the 1152 available
+// at the dialog's minimum width, so the edges take two rows of two. Both are
+// measured here: the one-row figure so the decision stays checkable, and the
+// two-row figure so a change that overflows it fails visibly.
+function maskCell(host, name) {
+   var nameLabel = new Label(host);
+   nameLabel.text = name + ":";
+   nameLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
+   nameLabel.setFixedWidth(host.font.width("Bottom:") + 6);
 
-   var lab = new Label(host3);
-   lab.text = "Mask:";
+   var percent = new SpinBox(host);
+   percent.setRange(0, 100);
+   percent.suffix = " %";
+   percent.value = 100;
+
+   var tilt = new SpinBox(host);
+   tilt.setRange(0, 45);
+   tilt.suffix = " deg";
+   tilt.value = 45;
+
+   var ccw = new CheckBox(host);
+   ccw.text = "CCW";
+
+   var cell = new HorizontalSizer;
+   cell.spacing = 2;
+   cell.add(nameLabel);
+   cell.add(percent);
+   cell.add(tilt);
+   cell.add(ccw);
+   return { sizer: cell, parts: [nameLabel, percent, tilt, ccw] };
+}
+
+function maskRowWidth(host, names, withLabel, withReadout) {
+   var row = new HorizontalSizer;
+   row.spacing = 6;
+   var items = [];
+   var lab = new Label(host);
+   lab.text = withLabel ? "Mask:" : "";
    lab.setFixedWidth(58);
-   row3.add(lab);
-
-   var radioW = Math.max(host3.font.width("Edges"), host3.font.width("Image")) + 30;
-   var rb = new RadioButton(host3);
+   row.add(lab);
+   items.push(lab);
+   var radioW = Math.max(host.font.width("Edges"), host.font.width("Image")) + 30;
+   var rb = new RadioButton(host);
    rb.text = "Edges";
    rb.setFixedWidth(radioW);
-   row3.add(rb);
-
-   var names = ["Top", "Bottom", "Left", "Right"];
+   row.add(rb);
+   items.push(rb);
    var cells = [];
-   for (i = 0; i < names.length; ++i) {
-      var nameLabel = new Label(host3);
-      nameLabel.text = names[i] + ":";
-      nameLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
-      nameLabel.setFixedWidth(host3.font.width("Bottom:") + 6);
-
-      var sa = new SpinBox(host3);
-      sa.setRange(0, 100);
-      sa.value = 100;
-      var sb = new SpinBox(host3);
-      sb.setRange(0, 100);
-      sb.value = 100;
-
-      var pcLabel = new Label(host3);
-      pcLabel.text = "%";
-      pcLabel.setFixedWidth(host3.font.width("%") + 4);
-
-      var cell = new HorizontalSizer;
-      cell.spacing = 2;
-      cell.add(nameLabel);
-      cell.add(sa);
-      cell.add(sb);
-      cell.add(pcLabel);
-      row3.add(cell);
+   for (var i = 0; i < names.length; ++i) {
+      var c = maskCell(host, names[i]);
+      cells.push(c);
+      row.add(c.sizer);
       if (i < names.length - 1) {
-         row3.addSpacing(8);
+         row.addSpacing(14);
       }
-      cells.push({ nameLabel: nameLabel, a: sa, b: sb, pcLabel: pcLabel });
    }
-   row3.addStretch();
-   var readout2 = new Label(host3);
-   readout2.text = "Excluded: 100.0%";
-   readout2.setFixedWidth(host3.font.width("Excluded: 100.0%") + 8);
-   row3.add(readout2);
+   row.addStretch();
+   var readout = null;
+   if (withReadout) {
+      readout = new Label(host);
+      readout.text = "Excluded: 100.0% of the frame";
+      readout.setFixedWidth(host.font.width(readout.text) + 8);
+      row.add(readout);
+      items.push(readout);
+   }
+   host.sizer = row;
+   layout(host, 1780);
 
-   host3.sizer = row3;
-   layout(host3, 1780);
-
-   var used = lab.width + rb.width + readout2.width;
+   var used = 0;
+   for (i = 0; i < items.length; ++i) {
+      used += items[i].width;
+   }
    for (i = 0; i < cells.length; ++i) {
-      used += cells[i].nameLabel.width + cells[i].a.width + cells[i].b.width
-            + cells[i].pcLabel.width;
-      say("  " + pad(names[i], 8) + "label " + pad(cells[i].nameLabel.width, 5)
-          + "spin " + pad(cells[i].a.width, 5) + "spin " + pad(cells[i].b.width, 5)
-          + "unit " + cells[i].pcLabel.width);
+      for (var j = 0; j < cells[i].parts.length; ++j) {
+         used += cells[i].parts[j].width;
+      }
    }
-   say("  label " + lab.width + "  radio " + rb.width
-       + "  readout " + readout2.width);
-   var spacing = 6 * 6 + 8 * 3 + 2 * 3 * 4;
-   say("  children " + used + " + spacing " + spacing + " = " + (used + spacing));
-   say("  available at the dialog minimum: 1152");
-   say((used + spacing <= 1152) ? "  PASS  the row fits at the minimum width"
-                                : "  FAIL  the row does NOT fit at the minimum width");
+   var spacing = 6 * (2 + cells.length + (withReadout ? 1 : 0))
+               + 14 * (cells.length - 1) + 2 * 3 * cells.length;
+   return { used: used, total: used + spacing, cell: cells[0] };
+}
 
-   host3.setFixedWidth(1152);
-   host3.ensureLayoutUpdated();
-   say("  at 1152: readout " + readout2.width
-       + "  Right spins " + cells[3].a.width + "/" + cells[3].b.width
-       + "  (unchanged means nothing was squeezed)");
+try {
+   var one = maskRowWidth(new Control, ["Top", "Bottom", "Left", "Right"], true, true);
+   var cellWidth = 0;
+   for (var pi = 0; pi < one.cell.parts.length; ++pi) {
+      cellWidth += one.cell.parts[pi].width;
+   }
+   say("  one cell (label + depth + tilt + CCW) = " + cellWidth);
+   say("  four cells on one row = " + one.total
+       + (one.total <= 1152 ? "   fits" : "   OVER by " + (one.total - 1152)
+          + ", which is why the edges take two rows"));
+
+   var top = maskRowWidth(new Control, ["Top", "Left"], true, false);
+   var bottom = maskRowWidth(new Control, ["Bottom", "Right"], false, true);
+   say("  two rows: top " + top.total + ", bottom " + bottom.total
+       + "  (budget 1152)");
+   say((top.total <= 1152 && bottom.total <= 1152)
+       ? "  PASS  both rows fit at the minimum width"
+       : "  FAIL  a row does not fit at the minimum width");
 } catch (e) {
    say("  ERROR: " + e);
 }
 
+say("");
 //----------------------------------------------------------------------------
 // 7. The file row, with Clear gone and the readout moved to the edges row
 //----------------------------------------------------------------------------

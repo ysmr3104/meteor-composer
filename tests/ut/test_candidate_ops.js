@@ -317,6 +317,151 @@ suite("matchAcrossFrames: empty input", function () {
 
 //----------------------------------------------------------------------------
 
+//----------------------------------------------------------------------------
+// Continuation matching
+//
+// The geometry below is the aircraft measured in the 2026-08-12 session,
+// in samples of the 1/8 field, so a change that would have let it break loose
+// again fails here.
+//
+//   frame 4976   (380,271)-(314,279)   angle 173
+//   frame 4977   (500,255)-(397,269)   angle 173
+//   frame 4978   (637,239)-(610,240)   angle 174
+//
+// The centroid moves 102.3 samples from 4976 to 4977 and 176 from 4977 to 4978,
+// against a limit of 100 - so proximity alone loses it after the seventh frame.
+//----------------------------------------------------------------------------
+
+function candidateFrom(x0, y0, x1, y1) {
+   var dx = x1 - x0, dy = y1 - y0;
+   var angle = ops.normalizeAngle180(Math.atan2(dy, dx) * 180 / Math.PI);
+   return {
+      x0: x0, y0: y0, x1: x1, y1: y1,
+      cx: (x0 + x1) / 2, cy: (y0 + y1) / 2,
+      length: Math.sqrt(dx * dx + dy * dy),
+      angle: angle
+   };
+}
+
+var AIR_4976 = candidateFrom(380, 271, 314, 279);
+var AIR_4977 = candidateFrom(500, 255, 397, 269);
+var AIR_4978 = candidateFrom(637, 239, 610, 240);
+
+suite("perpendicularToLine", function () {
+   var c = candidateFrom(0, 0, 100, 0);
+   close(ops.perpendicularToLine(c, 50, 0), 0, 1e-9, "a point on the line");
+   close(ops.perpendicularToLine(c, 50, 7), 7, 1e-9, "seven above it");
+   close(ops.perpendicularToLine(c, -300, 7), 7, 1e-9,
+         "and still seven far off the end - the line is infinite, not the segment");
+
+   var v = candidateFrom(10, 0, 10, 50);
+   close(ops.perpendicularToLine(v, 13, 200), 3, 1e-9, "a vertical line");
+
+   var dot = candidateFrom(5, 5, 5, 5);
+   close(ops.perpendicularToLine(dot, 5, 9), 4, 1e-9,
+         "a zero-length trail falls back to the distance from the point");
+});
+
+suite("nearestEndpointGap", function () {
+   var a = candidateFrom(0, 0, 100, 0);
+   var b = candidateFrom(120, 0, 220, 0);
+   close(ops.nearestEndpointGap(a, b), 20, 1e-9, "end to start");
+   close(ops.nearestEndpointGap(b, a), 20, 1e-9, "and the same either way round");
+   var c = candidateFrom(0, 0, 100, 0);
+   close(ops.nearestEndpointGap(a, c), 0, 1e-9, "trails that share an endpoint");
+});
+
+suite("continuesTrail: the aircraft that broke loose", function () {
+   ok(ops.continuesTrail(AIR_4976, AIR_4977, 1, null),
+      "4977 continues 4976");
+   ok(ops.continuesTrail(AIR_4977, AIR_4978, 1, null),
+      "4978 continues 4977");
+
+   // The measurements that decide it, asserted so a tolerance change is visible.
+   var perp = Math.max(ops.perpendicularToLine(AIR_4977, AIR_4978.x0, AIR_4978.y0),
+                       ops.perpendicularToLine(AIR_4977, AIR_4978.x1, AIR_4978.y1));
+   ok(perp < 3, "4978 sits within 3 samples of 4977's line (" + perp.toFixed(2) + ")");
+   var gap = ops.nearestEndpointGap(AIR_4977, AIR_4978);
+   ok(gap > 100 && gap < 150,
+      "and carries on from its end after a gap of " + gap.toFixed(0) + " samples");
+
+   // The reverse test is what a two-directional rule would have used, and it
+   // is why this one is one-directional.
+   var reverse = Math.max(ops.perpendicularToLine(AIR_4978, AIR_4977.x0, AIR_4977.y0),
+                          ops.perpendicularToLine(AIR_4978, AIR_4977.x1, AIR_4977.y1));
+   ok(reverse > 15,
+      "measured the other way round it is " + reverse.toFixed(0)
+      + " samples off, which would have refused the join");
+});
+
+suite("continuesTrail: what it refuses", function () {
+   // Parallel but displaced: a different object going the same way.
+   var displaced = candidateFrom(560, 300, 660, 286);
+   ok(!ops.continuesTrail(AIR_4977, displaced, 1, null),
+      "a parallel trail well off the line is not a continuation");
+
+   // On the line but far past the end.
+   var faraway = candidateFrom(1400, 133, 1500, 119);
+   ok(!ops.continuesTrail(AIR_4977, faraway, 1, null),
+      "on the line but far beyond the gap limit is not either");
+
+   // The gap allowance scales with the frame gap, because a skipped frame means
+   // twice as long to travel.
+   ok(!ops.continuesTrail(AIR_4977, candidateFrom(760, 220, 800, 214), 1, null),
+      "too far for one frame");
+   ok(ops.continuesTrail(AIR_4977, candidateFrom(760, 220, 800, 214), 2, null),
+      "but within reach across two");
+});
+
+suite("matchAcrossFrames: the aircraft is one track again", function () {
+   // Seven frames the disc could follow, then the two it could not.
+   var frames = [
+      { file: "f4970", candidates: [candidateFrom(86, 308, 58, 310)] },
+      { file: "f4971", candidates: [candidateFrom(116, 302, 86, 308)] },
+      { file: "f4972", candidates: [candidateFrom(152, 298, 117, 303)] },
+      { file: "f4973", candidates: [candidateFrom(195, 292, 153, 298)] },
+      { file: "f4974", candidates: [candidateFrom(247, 287, 195, 293)] },
+      { file: "f4975", candidates: [candidateFrom(312, 277, 249, 287)] },
+      { file: "f4976", candidates: [AIR_4976] },
+      { file: "f4977", candidates: [AIR_4977] },
+      { file: "f4978", candidates: [AIR_4978] }
+   ];
+   var tracks = ops.matchAcrossFrames(frames, null);
+   var longest = 0;
+   for (var i = 0; i < tracks.length; ++i) {
+      if (tracks[i].length > longest) {
+         longest = tracks[i].length;
+      }
+   }
+   ok(tracks.length === 1,
+      "all nine frames are one track (got " + tracks.length + " tracks)");
+   ok(longest === 9, "of length nine (got " + longest + ")");
+   ok(tracks[0].persistent, "and it is marked persistent");
+
+   // Without the continuation rule it breaks into three, which is the state
+   // that put two aircraft frames at the top of the strict list.
+   var noContinuation = ops.matchAcrossFrames(frames, {
+      maxContinuationPerp: 0, maxContinuationGap: 0
+   });
+   ok(noContinuation.length === 3,
+      "proximity alone breaks it into three (got " + noContinuation.length + ")");
+});
+
+suite("matchAcrossFrames: a two-frame meteor stays two frames", function () {
+   // A meteor at an exposure boundary continues its own line too - that is
+   // exactly what the continuation rule looks for - so the guard has to be the
+   // track length, not the geometry. Two frames is still not persistent.
+   var frames = [
+      { file: "a", candidates: [candidateFrom(100, 100, 200, 140)] },
+      { file: "b", candidates: [candidateFrom(205, 142, 300, 180)] }
+   ];
+   var tracks = ops.matchAcrossFrames(frames, null);
+   ok(tracks.length === 1, "the two halves are one track");
+   ok(tracks[0].length === 2, "of length two");
+   ok(!tracks[0].persistent, "and two frames is not persistent");
+});
+
+
 console.log("\n============================================");
 console.log("passed: " + passed + "  failed: " + failed);
 if (failed > 0) {
