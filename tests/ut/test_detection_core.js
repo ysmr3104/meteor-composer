@@ -450,6 +450,155 @@ suite("detectCandidates: bright excluded region does not raise the threshold", f
 });
 
 //----------------------------------------------------------------------------
+// Regions with no data
+//----------------------------------------------------------------------------
+
+suite("noDataMask finds exact zeros and nothing else", function () {
+   var f = syn.makeField(40, 30, 0.1);
+   var i;
+
+   // No zeros at all: nothing to exclude.
+   var none = core.noDataMask(f, 1);
+   ok(none.emptyCount === 0, "a full field reports nothing missing");
+   ok(none.applied === false, "and the mask is not applied");
+
+   // A strip down the left, as registration leaves when it shifts a frame.
+   for (var y = 0; y < 30; ++y) {
+      for (var x = 0; x < 3; ++x) {
+         f.data[y * 40 + x] = 0;
+      }
+   }
+   var m = core.noDataMask(f, 1);
+   ok(m.applied === true, "a strip of zeros is recognised");
+   ok(m.emptyCount === 90, "and counted (" + m.emptyCount + ")");
+   ok(m.usable[15 * 40 + 0] === 0, "the strip itself is excluded");
+   ok(m.usable[15 * 40 + 3] === 0,
+      "and so is the column beside it, which straddles the boundary");
+   ok(m.usable[15 * 40 + 4] === 1, "one column further out is kept");
+   ok(m.usable[15 * 40 + 39] === 1, "and the far side of the frame is untouched");
+});
+
+suite("noDataMask does not fire on noise, or on an empty field", function () {
+   // Sky noise about a subtracted background is negative half the time. An
+   // earlier version tested for "not positive" and marked half of a field like
+   // this as missing, which with the dilation left nothing to detect in.
+   var noisy = syn.makeField(60, 40, 0);
+   syn.addGaussianNoise(noisy, 0.002, 4242);
+   var m = core.noDataMask(noisy, 1);
+   ok(m.emptyCount < noisy.data.length / 100,
+      "noise about zero is not mistaken for missing data ("
+      + m.emptyCount + " of " + noisy.data.length + ")");
+
+   // A field that is mostly empty is not a frame with holes in it. Excluding
+   // nearly all of it would leave nothing to compute statistics from, and
+   // doing nothing is the right answer.
+   var empty = syn.makeField(50, 50, 0);
+   var all = core.noDataMask(empty, 1);
+   ok(all.emptyCount === 2500, "an all-zero field is all zeros");
+   ok(all.applied === false, "but the mask is not applied to it");
+   for (var i = 0; i < all.usable.length; ++i) {
+      if (!all.usable[i]) {
+         ok(false, "and nothing is excluded");
+         break;
+      }
+   }
+   ok(true, "and nothing is excluded");
+});
+
+suite("the background model ignores samples with no data", function () {
+   // The defect this fixes. A median over a block straddling the edge of the
+   // data lands between the sky and nothing, so subtracting it leaves the sky
+   // standing above zero in a line along that edge - and a line detector finds
+   // it, correctly, as a line.
+   var w = 96, h = 64;
+   var f = syn.makeField(w, h, 0.1);
+   var x, y;
+   for (y = 0; y < h; ++y) {
+      for (x = 0; x < 5; ++x) {
+         f.data[y * w + x] = 0;
+      }
+   }
+
+   var contaminated = core.removeBackground(f, 8, null);
+   var corrected = core.removeBackground(f, 8, core.noDataMask(f, 1).usable);
+
+   // The first column of real sky, right against the boundary.
+   var contaminatedEdge = 0, correctedEdge = 0;
+   for (y = 0; y < h; ++y) {
+      contaminatedEdge += contaminated.data[y * w + 6];
+      correctedEdge += corrected.data[y * w + 6];
+   }
+   contaminatedEdge /= h;
+   correctedEdge /= h;
+
+   ok(contaminatedEdge > 0.02,
+      "with the zeros included the sky is left standing above the background ("
+      + contaminatedEdge.toFixed(4) + ")");
+   ok(Math.abs(correctedEdge) < Math.abs(contaminatedEdge) / 5,
+      "and excluding them removes it (" + correctedEdge.toFixed(4) + ")");
+});
+
+suite("edgeContact separates lying along the boundary from touching it", function () {
+   // The distinction the whole approach rests on. A candidate NEAR an edge is
+   // not suspicious: a visual meteor of the evaluation night comes within 4 px
+   // of the border, and excluding a band along the edge would take the recall
+   // gate with it.
+   var w = 60, h = 40;
+   var f = syn.makeField(w, h, 0.1);
+   var x, y;
+   for (y = 0; y < h; ++y) {
+      for (x = 0; x < 4; ++x) {
+         f.data[y * w + x] = 0;
+      }
+   }
+   var usable = core.noDataMask(f, 1).usable;
+
+   // The pixels come from connectedComponents, not from a list written here.
+   //
+   // The first version of this test built them as plain indices, which is what
+   // the function was written to expect - and both were wrong. Components carry
+   // {x, y, w} objects, so every pixel read as NaN, every lookup came back
+   // undefined, and every candidate measured as lying entirely along the
+   // boundary. Thirteen of the thirty-one ground-truth meteors were being
+   // scored as artefacts and this test said nothing, because it agreed with the
+   // mistake.
+   //
+   // Taking the pixels from the real producer is what makes it a test of the
+   // interface rather than of one side's opinion of it.
+   function pixelsOf(binary) {
+      var cc = core.connectedComponents(binary, w, h, 8);
+      ok(cc.components.length === 1,
+         "the fixture is one component (" + cc.components.length + ")");
+      return cc.components[0].pixels;
+   }
+
+   // Along the boundary: a vertical line in the first usable column.
+   var alongBinary = new Uint8Array(w * h);
+   for (y = 10; y < 30; ++y) {
+      alongBinary[y * w + 5] = 1;
+   }
+   var along = pixelsOf(alongBinary);
+
+   // Across it: a horizontal line starting at the same column and running away.
+   var acrossBinary = new Uint8Array(w * h);
+   for (x = 5; x < 45; ++x) {
+      acrossBinary[20 * w + x] = 1;
+   }
+   var across = pixelsOf(acrossBinary);
+
+   var alongFraction = core.edgeContact(along, usable, w, h, 2);
+   var acrossFraction = core.edgeContact(across, usable, w, h, 2);
+
+   ok(alongFraction > 0.9,
+      "one that runs along the boundary is almost entirely against it ("
+      + (alongFraction * 100).toFixed(0) + "%)");
+   ok(acrossFraction < 0.3,
+      "one that merely starts there is not (" + (acrossFraction * 100).toFixed(0) + "%)");
+   ok(alongFraction > acrossFraction * 2,
+      "and the two are far enough apart to put a threshold between");
+});
+
+//----------------------------------------------------------------------------
 
 console.log("\n============================================");
 console.log("passed: " + passed + "  failed: " + failed);

@@ -172,6 +172,9 @@ function main() {
          sigma: r.sigma,
          level: r.level,
          componentCount: r.componentCount,
+         // How much of the frame held no data. Recorded so that a frame with a
+         // large empty region is identifiable from the results file alone.
+         noDataSamples: r.noDataSamples,
          candidates: r.candidates,
          ms: Date.now() - frameStart
       });

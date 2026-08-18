@@ -65,6 +65,22 @@ var DEFAULT_SCORE_OPTIONS = {
    // Multipliers, not vetoes. Even a stationary candidate keeps a non-zero
    // score so that sorting by score never hides it completely.
    stationaryFactor: 0.02,
+
+   // A candidate that runs along the edge of the frame's data is that edge.
+   //
+   // Registration leaves regions with nothing in them - a strip down one side of
+   // every frame, and on some frames a wedge covering nearly 40% - and their
+   // boundary is a genuinely straight, high-contrast line. Sixty-one of 411
+   // candidates on the evaluation night sat within five samples of one.
+   //
+   // Scored down rather than rejected, and NOT by asking whether the candidate
+   // is near an edge. A visual meteor of that night comes within 4 px of the
+   // border and two more meteors do as well: "near an edge" would take the
+   // recall gate with it. What separates them is whether the candidate lies
+   // ALONG the boundary, which was measured at 49% to 100% for the artefacts
+   // against 0% to 5% for the meteors.
+   edgeContactThreshold: 0.30,
+   edgeContactFactor: 0.02,
    persistentFactor: 0.15,
 
    // How much of the score colour is allowed to move. At 0.7 a candidate in
@@ -378,6 +394,15 @@ function scoreCandidate(row, population, options) {
       score *= opt.persistentFactor;
       reasons.push("moves across " + row.trackLength
                    + " frames - longer than a meteor can last");
+   }
+
+   var contact = row.candidate !== undefined && row.candidate !== null
+      ? row.candidate.edgeContact : row.edgeContact;
+   if (typeof contact === "number" && contact >= opt.edgeContactThreshold) {
+      score *= opt.edgeContactFactor;
+      reasons.push("runs along the edge of the frame's data for "
+                   + (contact * 100).toFixed(0) + "% of its length"
+                   + " - that edge is a straight line, and this is it");
    }
 
    var g = greenFraction(row.colour);

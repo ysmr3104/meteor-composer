@@ -365,6 +365,41 @@ suite("presets", function () {
    }
 });
 
+suite("a candidate that lies along the edge of the data is scored down", function () {
+   // Measured on the evaluation night: the artefacts came out at 49% to 100%
+   // of their length against the boundary, the meteors at 0% to 5%. The
+   // threshold sits between, nearer the meteors, because the cost of the two
+   // mistakes is not the same.
+   var artefact = { trackLength: 1, stationary: false, persistent: false,
+                    colour: null, candidate: { edgeContact: 1.0 } };
+   var a = clf.scoreCandidate(artefact, null, null);
+   ok(a.score < 0.05, "one that lies entirely along the boundary sinks");
+   ok(a.score > 0, "but not to zero - sorting must not hide it entirely");
+   ok(a.reasons.length === 1 && a.reasons[0].indexOf("edge of the frame") >= 0,
+      "and says why: " + a.reasons[0]);
+
+   // The case that must NOT be caught. A meteor is allowed to reach the edge.
+   var meteor = { trackLength: 1, stationary: false, persistent: false,
+                  colour: null, candidate: { edgeContact: 0.05 } };
+   ok(clf.scoreCandidate(meteor, null, null).score === 1.0,
+      "one that merely touches the edge is untouched");
+
+   // The worst of the artefacts measured at 49%, the best of the meteors at 5%.
+   // Both sides of the threshold are asserted so that moving it later has to be
+   // deliberate.
+   var worstArtefact = { trackLength: 1, stationary: false, persistent: false,
+                         colour: null, candidate: { edgeContact: 0.49 } };
+   ok(clf.scoreCandidate(worstArtefact, null, null).score < 0.05,
+      "the least edge-bound artefact measured is still caught");
+
+   // No measurement at all - an older results file - must not be treated as
+   // zero contact or as total contact. It is simply not evidence.
+   var unknown = { trackLength: 1, stationary: false, persistent: false,
+                   colour: null, candidate: {} };
+   ok(clf.scoreCandidate(unknown, null, null).score === 1.0,
+      "a candidate with no measurement is not penalised");
+});
+
 //----------------------------------------------------------------------------
 
 console.log("\n============================================");

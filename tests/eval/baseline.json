@@ -1,5 +1,5 @@
 {
-  "generated": "2026-08-16T15:50:54.179Z",
+  "generated": "2026-08-18T09:03:30.386Z",
   "options": {
     "backgroundFactor": 8,
     "k": 5,
@@ -10,16 +10,28 @@
   },
   "framesProcessed": 654,
   "labelledMeteors": 31,
-  "detected": 31,
-  "recall": 1,
+  "detected": 30,
+  "recall": 0.967741935483871,
   "visualLabels": 9,
   "visualDetected": 9,
   "visualRecall": 1,
   "screeningLabels": 22,
-  "screeningDetected": 22,
-  "screeningRecall": 1,
+  "screeningDetected": 21,
+  "screeningRecall": 0.9545454545454546,
   "knownFalsePositives": 380,
-  "totalCandidates": 411,
-  "needsReviewFrames": 0,
-  "msPerFrame": 757.2889908256881
+  "totalCandidates": 376,
+  "needsReviewFrames": 1,
+  "msPerFrame": 759.8700305810397,
+  "missedFiles": [
+    "pct-2026-08-12_005413_ILCE-7M3_DSC04908_d_r.xisf"
+  ],
+  "acceptedRegression": {
+    "from": 31,
+    "to": 30,
+    "reason": "The exact zeros registration leaves outside the frame were corrupting the robust statistics: DSC04908 had a flattened-field sigma of 1.67e-6 against a true 4.28e-6, so its candidate existed only because of that 2.6x too-low threshold. Computing the statistics over the sky alone lost it. An accident stopped happening; detection ability did not change - the visual recall gate is still 9/9. The frame was already excluded from compositing by the plausibility guard (fit scale 0.097), so nothing reaches the output that did before.",
+    "at": "2026-08-18T09:03:30.386Z",
+    "lostLabels": [
+      "pct-2026-08-12_005413_ILCE-7M3_DSC04908_d_r.xisf"
+    ]
+  }
 }
