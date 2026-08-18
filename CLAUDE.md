@@ -39,7 +39,7 @@ MeteorComposer は、一眼カメラで撮影した流星群の連番画像か�
 |---|---|---|
 | `javascript/paths.js` | ファイル名・出力先の決定（純粋 JS） | 実装済み |
 | `javascript/detection_core.js` | 検出コア（純粋 JS） | 実装済み |
-| `javascript/mask_geometry.js` | 除外領域 Tier 1 / Tier 2（純粋 JS） | 実装済み・**未 include**（Tier 1 の UI が未着手） |
+| `javascript/mask_geometry.js` | 除外領域 Tier 1 / Tier 2、辺バンド → 半平面の変換、マスク画像の閾値（純粋 JS） | 実装済み・include 済み。**実データ検証は未了** |
 | `javascript/candidate_ops.js` | 共線マージ・横断照合 | 実装済み |
 | `javascript/preview_geometry.js` | オーバーレイの座標変換・ヒットテスト（純粋 JS） | 実装済み |
 | `javascript/session_model.js` | スクリーニング状態・判定・JSON 往復（純粋 JS） | 実装済み |

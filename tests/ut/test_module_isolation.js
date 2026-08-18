@@ -286,6 +286,24 @@ var KEYWORDS = ["if", "for", "while", "switch", "catch", "return", "typeof",
                 "function", "class", "super", "this", "delete", "in", "of",
                 "new", "do", "else", "throw", "case", "void", "instanceof"];
 
+// A local helper bound to a function expression is a declaration too:
+//
+//    var makeCell = function ( edge, name ) { ... };
+//
+// topLevelNames() only looks at column zero, so without this a helper declared
+// inside a method reads as a call to something that does not exist. Only names
+// bound to a `function` are collected, so this cannot excuse a typo in a call
+// to an API that is simply absent.
+function localFunctionNames(source) {
+   var names = {};
+   var re = /^\s+var\s+([A-Za-z_$][A-Za-z0-9_$]*)\s*=\s*function\b/gm;
+   var m;
+   while ((m = re.exec(source)) !== null) {
+      names[m[1]] = true;
+   }
+   return names;
+}
+
 // Parameters are locally bound, so calling one is not a reference to a
 // global. Collected coarsely from every parameter list in the file: this only
 // ever suppresses reports, never adds them, and a parameter name colliding
@@ -337,6 +355,7 @@ suite("MeteorComposer.js only calls things that exist", function () {
    }
 
    var params = parameterNames(mainSource);
+   var locals = localFunctionNames(mainSource);
 
    var unknown = [];
    var calls = bareCalls(mainSource);
@@ -345,7 +364,8 @@ suite("MeteorComposer.js only calls things that exist", function () {
       if (KEYWORDS.indexOf(name) >= 0 || AMBIENT.indexOf(name) >= 0) {
          continue;
       }
-      if (declared[name] !== undefined || params[name] === true) {
+      if (declared[name] !== undefined || params[name] === true
+          || locals[name] === true) {
          continue;
       }
       unknown.push(name);

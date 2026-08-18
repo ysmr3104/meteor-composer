@@ -113,7 +113,7 @@ if (typeof module !== "undefined") {
 |---|---|---|
 | `javascript/detection_core.js` | 純粋 JS。背景除去・閾値・連結成分・モーメント | Small |
 | `javascript/candidate_ops.js` | 純粋 JS。共線マージ・横断照合・スコアリング | Small |
-| `javascript/mask_geometry.js` | 純粋 JS。半平面判定・キーフレーム補間・面積計算 | Small |
+| `javascript/mask_geometry.js` | 純粋 JS。半平面判定・キーフレーム補間・面積計算・辺バンドの変換・マスク画像の閾値・オーバーレイのラン抽出 | Small |
 | `javascript/pjsr_image_io.js` | PJSR 専用。XISF 読み込み・輝度抽出・縮小 | Medium |
 | `javascript/MeteorComposer.js` | PJSR 専用。UI とパイプライン統合 | Medium / Large |
 

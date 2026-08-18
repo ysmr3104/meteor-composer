@@ -25,6 +25,7 @@
 #include "paths.js"
 #include "detection_core.js"
 #include "candidate_ops.js"
+#include "mask_geometry.js"
 #include "classifier.js"
 #include "trail_mask.js"
 #include "composition.js"
@@ -59,6 +60,16 @@
 #define COLOUR_NOT_METEOR 0xFFDD4444
 #define COLOUR_UNCERTAIN  0xFFFF9922
 #define COLOUR_SELECTED   0xFFFFFFFF
+
+// The exclusion mask's tint. Translucent, and deliberately none of the verdict
+// colours: an excluded region is not an opinion about a candidate.
+#define COLOUR_MASK_TINT  0x5AA050FF
+
+// A painted mask is only ever consulted on the 1/8 detection grid, so it is
+// resampled to this on load. Matrix.toArray() returns a plain JavaScript
+// Array, and holding a 24-megapixel mask at full resolution would cost
+// hundreds of megabytes to answer questions asked at 1/8 scale.
+#define MASK_FILE_MAX_SIDE 1024
 
 //============================================================================
 // PJSR layer: frames on disk
@@ -155,6 +166,56 @@ function renderFrame(path, lockedSTF) {
       }
       win.forceClose();
    }
+}
+
+//============================================================================
+// PJSR layer: the exclusion mask
+//
+// The geometry and the black-is-excluded threshold live in mask_geometry.js
+// with Small tests. Only reading the file and painting the tint are here.
+//============================================================================
+
+// Read a painted mask as a luminance field.
+//
+// Resampled on the way in, because the mask is only consulted on the detection
+// grid; the residual difference in size, and any difference in aspect ratio,
+// is taken up by maskFromLuminance(), which is also where the threshold - and
+// with it the black-is-excluded convention - is decided.
+function loadMaskLuminance(path, maxSide) {
+   var windows = ImageWindow.open(path);
+   if (!windows || windows.length === 0) {
+      return null;
+   }
+   var win = windows[0];
+   try {
+      var Y = new Image();
+      win.mainView.image.getLuminance(Y);
+      var longest = Math.max(Y.width, Y.height);
+      if (longest > maxSide) {
+         Y.resample(maxSide / longest);
+      }
+      var m = Y.toMatrix();
+      return { data: m.toArray(), width: Y.width, height: Y.height };
+   } finally {
+      win.forceClose();
+   }
+}
+
+// A translucent tint over every excluded sample.
+//
+// Built from the mask itself rather than redrawn from the numbers, so the
+// overlay cannot disagree with what detection will refuse to look at. It is at
+// the detection grid's resolution, which is also the granularity exclusion
+// really has - the blocks are not an artefact of the drawing.
+function maskOverlayBitmap(mask, width, height) {
+   var bmp = new Bitmap(width, height);
+   bmp.fill(0x00000000);
+   var runs = maskRuns(mask, width, height);
+   for (var i = 0; i < runs.length; ++i) {
+      var r = runs[i];
+      bmp.fill(r.x0, r.y, r.x1 + 1, r.y + 1, COLOUR_MASK_TINT);
+   }
+   return bmp;
 }
 
 //============================================================================
@@ -286,6 +347,12 @@ var MeteorPreviewControl = class extends ScrollBox {
       this.zoomLevel = 1.0;
       this.onFrameRedrawn = null;
 
+      // The exclusion mask, tinted, at the detection grid's resolution. Drawn
+      // scaled onto the same rectangle as the frame, so it follows zoom and
+      // pan without any arithmetic of its own.
+      this.maskBitmap = null;
+      this.maskDisplayBitmap = null;
+
       this.candidates = [];
       this.verdicts = [];      // parallel to candidates
       this.rowNumbers = [];    // parallel to candidates; what the list shows
@@ -354,10 +421,14 @@ var MeteorPreviewControl = class extends ScrollBox {
 
             var dispW = Math.round(bmp.width * self.zoomLevel);
             var dispH = Math.round(bmp.height * self.zoomLevel);
-            g.drawScaledBitmap(
-               new Rect(-self.scrollX, -self.scrollY,
-                        dispW - self.scrollX, dispH - self.scrollY),
-               bmp);
+            var frameRect = new Rect(-self.scrollX, -self.scrollY,
+                                     dispW - self.scrollX, dispH - self.scrollY);
+            g.drawScaledBitmap(frameRect, bmp);
+
+            // Under the candidate boxes: the boxes are the thing being judged.
+            if (self.maskDisplayBitmap !== null) {
+               g.drawScaledBitmap(frameRect, self.maskDisplayBitmap);
+            }
 
             self.paintOverlay(g, this.width, this.height);
          } finally {
@@ -534,6 +605,7 @@ var MeteorPreviewControl = class extends ScrollBox {
    // rotating on every frame change is cheap enough that no rotated copy is
    // cached beyond the frame on screen.
    rebuildDisplayBitmap() {
+      this.rebuildMaskDisplayBitmap();
       if (this.bitmap === null) {
          this.displayBitmap = null;
          return;
@@ -541,6 +613,24 @@ var MeteorPreviewControl = class extends ScrollBox {
       this.displayBitmap = (normalizeRotation(this.rotation) === 0)
          ? this.bitmap
          : this.bitmap.rotated(normalizeRotation(this.rotation));
+   }
+
+   // The mask is drawn onto the frame's rectangle, so it has to be turned with
+   // the frame or it would sit across it.
+   rebuildMaskDisplayBitmap() {
+      if (this.maskBitmap === null) {
+         this.maskDisplayBitmap = null;
+         return;
+      }
+      this.maskDisplayBitmap = (normalizeRotation(this.rotation) === 0)
+         ? this.maskBitmap
+         : this.maskBitmap.rotated(normalizeRotation(this.rotation));
+   }
+
+   setMask(bitmap) {
+      this.maskBitmap = bitmap;
+      this.rebuildMaskDisplayBitmap();
+      this.viewport.update();
    }
 
    // The rotation is a property of the preview, not of the frame, so it
@@ -1199,6 +1289,18 @@ var MeteorComposerDialog = class extends Dialog {
       // better guess; a choice may not.
       this.outputDirChosen = false;
       this.autosaveError = null;
+      // The exclusion mask (docs/requirements.md 5). Two sources, one at a
+      // time. "edges" with every number at zero excludes nothing, which is what
+      // an untouched dialog has to mean: the mask must not be able to change a
+      // result by being present.
+      this.maskMode = "edges";
+      this.maskEdges = makeEdgeSpec();
+      this.maskFilePath = "";
+      this.maskFileLum = null;
+      // Opening a frame costs about a second, so the first one is shown once
+      // the window is up rather than during construction, where the wait would
+      // read as a hang.
+      this._firstFrameShown = false;
       // Screening opens sorted by score, highest first: the ordering was
       // measured to put 25 of 31 labelled meteors in the top 50 rows.
       // Ground-truth mode opens in capture order, because ordering by the
@@ -1290,6 +1392,21 @@ var MeteorComposerDialog = class extends Dialog {
 
       this.restoreSettings();
       this.updateEnabled();
+
+      // Not in the constructor: opening a frame takes about a second, and a
+      // second before the window appears is indistinguishable from a hang.
+      // processEvents() first so the dialog is actually painted before the wait.
+      this.onShow = function () {
+         if (self._firstFrameShown) {
+            return;
+         }
+         self._firstFrameShown = true;
+         if (self.registeredDir.length === 0) {
+            return;
+         }
+         CoreApplication.processEvents();
+         self.showFirstFrame();
+      };
    }
 
    // --- Construction -------------------------------------------------------
@@ -1327,6 +1444,10 @@ var MeteorComposerDialog = class extends Dialog {
                self.setOutputDir(defaultOutputDir(dlg.directory));
             }
             self.updateEnabled();
+            // A mask is set by looking at the frame, so the frame comes first.
+            self.cache.clear();
+            self._firstFrameShown = true;
+            self.showFirstFrame();
          }
       };
 
@@ -1419,9 +1540,205 @@ var MeteorComposerDialog = class extends Dialog {
       this.sourceGroup.sizer = new VerticalSizer;
       this.sourceGroup.sizer.margin = 6;
       this.sourceGroup.sizer.spacing = 4;
+      var maskRows = this.buildMaskRows(pathLabelWidth);
+
       this.sourceGroup.sizer.add(row1);
       this.sourceGroup.sizer.add(rowOutput);
+      for (var m = 0; m < maskRows.length; ++m) {
+         this.sourceGroup.sizer.add(maskRows[m]);
+      }
       this.sourceGroup.sizer.add(row2);
+   }
+
+   // The exclusion mask.
+   //
+   // Two sources, one at a time: numbers per edge, or a painted image. Numbers
+   // cover what actually happens - the ground across the bottom, trees up one
+   // side - and an image covers everything else. A radio and not both at once,
+   // because with two sources active no reading of the dialog tells you which
+   // one put a shadow where.
+   //
+   // It sits below Output rather than between Frames and Output: those two are
+   // a pair, where the frames are read and where the results are written, and
+   // a mask is neither. It is a detection setting, so it belongs next to Run
+   // detection.
+   buildMaskRows(pathLabelWidth) {
+      var self = this;
+      var group = this.sourceGroup;
+      var editWidth = this.font.width("00000");
+      var nameWidth = this.font.width("Bottom:") + 6;
+      var tiltWidth = this.font.width("tilt:") + 6;
+      var pcWidth = this.font.width("%") + 4;
+      var degWidth = this.font.width("deg") + 4;
+
+      this.maskLabel = new Label(group);
+      this.maskLabel.text = "Mask:";
+      this.maskLabel.textAlignment = TextAlignment.Right | TextAlignment.VerticalCenter;
+      this.maskLabel.setFixedWidth(pathLabelWidth);
+
+      this.maskEdgesRadio = new RadioButton(group);
+      this.maskEdgesRadio.text = "Edges";
+      this.maskEdgesRadio.checked = true;
+      this.maskEdgesRadio.toolTip =
+         "<p>Exclude a band along one or more edges of the frame, as a "
+       + "percentage of the frame plus an optional tilt.</p>"
+       + "<p>All zero excludes nothing.</p>";
+      this.maskEdgesRadio.onCheck = function (checked) {
+         if (checked) {
+            self.maskMode = "edges";
+            self.maskSourceChanged();
+         }
+      };
+
+      this.maskFileRadio = new RadioButton(group);
+      this.maskFileRadio.text = "Image";
+      this.maskFileRadio.toolTip =
+         "<p>Exclude wherever a painted image is black. For a shape straight "
+       + "edges cannot describe, such as a tree line.</p>";
+      this.maskFileRadio.onCheck = function (checked) {
+         if (checked) {
+            self.maskMode = "file";
+            self.maskSourceChanged();
+         }
+      };
+
+      // A RadioButton asks for a comfortable minimum width, and two of them
+      // asking for it pushed the numbers out of the group. Sized to what they
+      // hold, the same correction the preview toolbar needed.
+      var radioWidth = Math.max(this.font.width(this.maskEdgesRadio.text),
+                                this.font.width(this.maskFileRadio.text)) + 30;
+      this.maskEdgesRadio.setFixedWidth(radioWidth);
+      this.maskFileRadio.setFixedWidth(radioWidth);
+
+      this.maskEdgeControls = {};
+
+      var makeCell = function (edge, name) {
+         var percent = new NumericEdit(group);
+         percent.label.text = name + ":";
+         percent.label.setFixedWidth(nameWidth);
+         percent.setRange(0, 100);
+         percent.setReal(true);
+         percent.setPrecision(1);
+         percent.setValue(self.maskEdges[edge].percent);
+         percent.edit.setFixedWidth(editWidth);
+         percent.toolTip = "<p>How far in from the " + name.toLowerCase()
+                         + " edge is excluded, as a percentage of the frame.</p>";
+         percent.onValueUpdated = function (value) {
+            self.maskEdges[edge].percent = value;
+            self.refreshMask();
+         };
+
+         var pcLabel = new Label(group);
+         pcLabel.text = "%";
+         pcLabel.textAlignment = TextAlignment.Left | TextAlignment.VerticalCenter;
+         pcLabel.setFixedWidth(pcWidth);
+
+         var angle = new NumericEdit(group);
+         angle.label.text = "tilt:";
+         angle.label.setFixedWidth(tiltWidth);
+         angle.setRange(-45, 45);
+         angle.setReal(true);
+         angle.setPrecision(1);
+         angle.setValue(self.maskEdges[edge].angle);
+         angle.edit.setFixedWidth(editWidth);
+         angle.toolTip =
+            "<p>Tilt of the boundary in degrees. Positive turns it clockwise "
+          + "on screen.</p>"
+          + "<p>The tilt pivots at the middle of the edge, so the excluded area "
+          + "stays where you set it while you adjust the slope.</p>";
+         angle.onValueUpdated = function (value) {
+            self.maskEdges[edge].angle = value;
+            self.refreshMask();
+         };
+
+         var degLabel = new Label(group);
+         degLabel.text = "deg";
+         degLabel.textAlignment = TextAlignment.Left | TextAlignment.VerticalCenter;
+         degLabel.setFixedWidth(degWidth);
+
+         self.maskEdgeControls[edge] = { percent: percent, angle: angle };
+
+         var cell = new HorizontalSizer;
+         cell.spacing = 2;
+         cell.add(percent);
+         cell.add(pcLabel);
+         cell.addSpacing(6);
+         cell.add(angle);
+         cell.add(degLabel);
+         return cell;
+      };
+
+      var spacer = function (width) {
+         var label = new Label(group);
+         label.text = "";
+         label.setFixedWidth(width);
+         return label;
+      };
+
+      // Two rows of two rather than one row of four: four cells side by side
+      // came to more than seven hundred pixels, and this group shares the
+      // window with three panes.
+      var rowA = new HorizontalSizer;
+      rowA.spacing = 6;
+      rowA.add(this.maskLabel);
+      rowA.add(this.maskEdgesRadio);
+      rowA.add(makeCell("top", "Top"));
+      rowA.addSpacing(14);
+      rowA.add(makeCell("left", "Left"));
+      rowA.addStretch();
+
+      var rowB = new HorizontalSizer;
+      rowB.spacing = 6;
+      rowB.add(spacer(pathLabelWidth));
+      rowB.add(spacer(radioWidth));
+      rowB.add(makeCell("bottom", "Bottom"));
+      rowB.addSpacing(14);
+      rowB.add(makeCell("right", "Right"));
+      rowB.addStretch();
+
+      this.maskFileEdit = new Edit(group);
+      this.maskFileEdit.readOnly = true;
+      this.maskFileEdit.toolTip =
+         "<p>A painted mask. Black is excluded; anything brighter than halfway "
+       + "is kept.</p>"
+       + "<p>It does not have to be the frame's size - it is stretched to "
+       + "cover the frame.</p>";
+
+      this.maskFileBrowseButton = new PushButton(group);
+      this.maskFileBrowseButton.text = "Browse...";
+      this.maskFileBrowseButton.onClick = function () {
+         self.chooseMaskFile();
+      };
+
+      this.maskClearButton = new PushButton(group);
+      this.maskClearButton.text = "Clear";
+      this.maskClearButton.toolTip =
+         "<p>Put every edge back to zero and forget the painted mask, so that "
+       + "nothing is excluded.</p>";
+      this.maskClearButton.setFixedWidth(
+         this.font.width(this.maskClearButton.text) + 20);
+      this.maskClearButton.onClick = function () {
+         self.clearMask();
+      };
+
+      // The one number that makes over-masking visible. Nothing else in the
+      // dialog would show it: detection would simply find less, and quietly.
+      this.maskReadout = new Label(group);
+      this.maskReadout.text = "Excluded: none";
+      this.maskReadout.textAlignment = TextAlignment.Left | TextAlignment.VerticalCenter;
+
+      var rowC = new HorizontalSizer;
+      rowC.spacing = 6;
+      rowC.add(spacer(pathLabelWidth));
+      rowC.add(this.maskFileRadio);
+      rowC.add(this.maskFileEdit, 100);
+      rowC.add(this.maskFileBrowseButton);
+      rowC.addSpacing(10);
+      rowC.add(this.maskClearButton);
+      rowC.addSpacing(10);
+      rowC.add(this.maskReadout);
+
+      return [rowA, rowB, rowC];
    }
 
    buildListSection() {
@@ -1923,6 +2240,211 @@ var MeteorComposerDialog = class extends Dialog {
 
    // --- Detection ----------------------------------------------------------
 
+   // --- Exclusion mask -----------------------------------------------------
+
+   maskSourceChanged() {
+      var edges = (this.maskMode === "edges");
+      for (var i = 0; i < MASK_EDGES.length; ++i) {
+         var cell = this.maskEdgeControls[MASK_EDGES[i]];
+         cell.percent.enabled = edges;
+         cell.angle.enabled = edges;
+      }
+      this.maskFileEdit.enabled = !edges;
+      this.maskFileBrowseButton.enabled = !edges;
+      this.refreshMask();
+   }
+
+   clearMask() {
+      this.maskEdges = makeEdgeSpec();
+      for (var i = 0; i < MASK_EDGES.length; ++i) {
+         var cell = this.maskEdgeControls[MASK_EDGES[i]];
+         cell.percent.setValue(0);
+         cell.angle.setValue(0);
+      }
+      this.maskFilePath = "";
+      this.maskFileLum = null;
+      this.maskFileEdit.text = "";
+      this.maskMode = "edges";
+      this.maskEdgesRadio.checked = true;
+      this.maskSourceChanged();
+   }
+
+   chooseMaskFile() {
+      var dlg = new OpenFileDialog;
+      dlg.caption = "Mask image - black is excluded";
+      dlg.multipleSelections = false;
+      // Every format PixInsight can read, from PixInsight itself. A hand-written
+      // filter list is how a file dialog comes to match nothing at all.
+      dlg.loadImageFilters();
+      if (this.maskFilePath.length > 0) {
+         var dir = directoryOf(this.maskFilePath);
+         if (dir.length > 0 && File.directoryExists(dir)) {
+            dlg.initialPath = dir;
+         }
+      }
+      if (!dlg.execute()) {
+         return;
+      }
+      this.setMaskFile(dlg.filePath);
+   }
+
+   setMaskFile(path) {
+      this.maskFilePath = path;
+      this.maskFileEdit.text = path;
+      this.maskFileLum = null;
+      var failure = null;
+      this.cursor = new Cursor(StdCursor.Wait);
+      try {
+         this.maskFileLum = loadMaskLuminance(path, MASK_FILE_MAX_SIDE);
+      } catch (e) {
+         failure = "" + e;
+      } finally {
+         this.cursor = new Cursor(StdCursor.Arrow);
+      }
+      if (this.maskFileLum === null) {
+         (new MessageBox(
+            "Could not read that image as a mask:\n" + path
+          + (failure === null ? "" : "\n\n" + failure),
+            TITLE, StdIcon.Error, StdButton.Ok)).execute();
+      }
+      this.refreshMask();
+   }
+
+   // The mask detection is given, at the field's own size.
+   //
+   // null when nothing is excluded, so that an untouched Mask row leaves
+   // detectCandidates() on exactly the path it was on before this row existed.
+   // A mask of all ones would be arithmetically equivalent, but "equivalent"
+   // is a claim, and there is no reason to make it.
+   maskForField(fieldWidth, fieldHeight) {
+      if (this.maskMode === "file") {
+         if (this.maskFileLum === null) {
+            return null;
+         }
+         return maskFromLuminance(this.maskFileLum.data,
+                                  this.maskFileLum.width, this.maskFileLum.height,
+                                  fieldWidth, fieldHeight);
+      }
+      if (edgeSpecIsEmpty(this.maskEdges)) {
+         return null;
+      }
+      return buildMask(edgeSpecToRegion(this.maskEdges, fieldWidth, fieldHeight),
+                       fieldWidth, fieldHeight);
+   }
+
+   // Recompute the readout and the preview overlay. Called on every keystroke
+   // in the mask fields, which is why it works on the 1/8 grid: a few hundred
+   // thousand samples is fast enough to follow typing, and it is also the grid
+   // detection will use, so the shading is the mask and not a picture of it.
+   refreshMask() {
+      var haveFrame = (this.preview.imageWidth > 0 && this.preview.imageHeight > 0);
+      // With no frame open yet the readout falls back to a nominal frame. The
+      // percentages are exact at any size; only a tilt makes the excluded area
+      // depend on the aspect ratio, and a frame appears as soon as one is
+      // chosen, so this is a transient.
+      var fw = haveFrame ? Math.max(1, Math.round(this.preview.imageWidth / SCREEN_FACTOR)) : 750;
+      var fh = haveFrame ? Math.max(1, Math.round(this.preview.imageHeight / SCREEN_FACTOR)) : 500;
+
+      var mask = this.maskForField(fw, fh);
+      if (mask === null) {
+         this.maskReadout.text = (this.maskMode === "file" && this.maskFilePath.length > 0)
+            ? "Excluded: none - the mask image could not be read"
+            : "Excluded: none";
+         this.preview.setMask(null);
+         return;
+      }
+      var fraction = maskExcludedFraction(mask);
+      this.maskReadout.text = "Excluded: " + (fraction * 100).toFixed(1)
+                            + "% of the frame";
+      this.preview.setMask(haveFrame ? maskOverlayBitmap(mask, fw, fh) : null);
+   }
+
+   // Recorded in the detection results, so that a results file carries the mask
+   // it was produced under. Without it, a candidate list and the same list with
+   // a third of the frame excluded are indistinguishable on disk.
+   maskSpec() {
+      if (this.maskMode === "file") {
+         return { mode: "file", file: this.maskFilePath };
+      }
+      var edges = {};
+      for (var i = 0; i < MASK_EDGES.length; ++i) {
+         var e = this.maskEdges[MASK_EDGES[i]];
+         edges[MASK_EDGES[i]] = { percent: e.percent, angle: e.angle };
+      }
+      return { mode: "edges", edges: edges };
+   }
+
+   // Put the controls back to what a results file was produced under, so that
+   // the shading over a loaded frame is the exclusion those candidates were
+   // found with rather than whatever the fields happen to hold.
+   applyMaskSpec(spec) {
+      if (!spec) {
+         return;
+      }
+      if (spec.mode === "file") {
+         this.maskMode = "file";
+         this.maskFileRadio.checked = true;
+         if (spec.file !== undefined && spec.file !== null && spec.file.length > 0
+             && File.exists(spec.file)) {
+            this.setMaskFile(spec.file);
+            return;
+         }
+         // Said out loud rather than silently falling back to no mask: the
+         // candidate list was produced with something this session cannot see.
+         this.maskFilePath = (spec.file === undefined || spec.file === null)
+            ? "" : spec.file;
+         this.maskFileEdit.text = this.maskFilePath;
+         this.maskFileLum = null;
+         this.maskSourceChanged();
+         return;
+      }
+      this.maskMode = "edges";
+      this.maskEdgesRadio.checked = true;
+      this.maskEdges = makeEdgeSpec();
+      for (var i = 0; i < MASK_EDGES.length; ++i) {
+         var edge = MASK_EDGES[i];
+         var from = (spec.edges && spec.edges[edge]) ? spec.edges[edge] : null;
+         if (from !== null) {
+            this.maskEdges[edge].percent = clampPercent(from.percent);
+            this.maskEdges[edge].angle = Number(from.angle) || 0;
+         }
+         var cell = this.maskEdgeControls[edge];
+         cell.percent.setValue(this.maskEdges[edge].percent);
+         cell.angle.setValue(this.maskEdges[edge].angle);
+      }
+      this.maskSourceChanged();
+   }
+
+   // The first frame, shown as soon as there is a directory to show it from.
+   //
+   // A mask is set by looking at the sky it is going to hide, not by imagining
+   // it. Nothing else in the dialog would put a frame on screen before an
+   // eight-minute detection had run.
+   showFirstFrame() {
+      if (this.registeredDir.length === 0 || this.session !== null) {
+         return;
+      }
+      var frames = listFrames(this.registeredDir);
+      if (frames.length === 0) {
+         this.frameLabel.text = "No .xisf frames in that directory.";
+         return;
+      }
+      var path = this.framePath(frames[0]);
+      this.cursor = new Cursor(StdCursor.Wait);
+      try {
+         var rendered = this.cache.get(path);
+         this.preview.setFrame(rendered);
+         this.frameLabel.text = (rendered === null)
+            ? "Could not open " + frames[0]
+            : frames[0] + "   " + rendered.width + "x" + rendered.height
+              + "   (first frame)";
+      } finally {
+         this.cursor = new Cursor(StdCursor.Arrow);
+      }
+      // The frame's size is what the overlay needs, so this has to come after.
+      this.refreshMask();
+   }
+
    runDetection() {
       if (this.registeredDir.length === 0) {
          (new MessageBox("Choose a directory of registered frames first.",
@@ -1953,7 +2475,7 @@ var MeteorComposerDialog = class extends Dialog {
       var results = { group: baseName(this.registeredDir),
                       registeredDir: this.registeredDir,
                       screenFactor: SCREEN_FACTOR,
-                      options: options, frames: [] };
+                      options: options, mask: this.maskSpec(), frames: [] };
       var withCandidates = 0;
 
       for (var i = 0; i < frames.length; ++i) {
@@ -1965,7 +2487,11 @@ var MeteorComposerDialog = class extends Dialog {
          try {
             var field = loadField(this.registeredDir + "/" + name, SCREEN_FACTOR);
             if (field !== null) {
-               var r = detectCandidates(field, options, null);
+               // Built from this frame's own field size. The mask has to be
+               // exactly the field's length, and a percentage describes the
+               // same mask at any size, so nothing is carried between frames.
+               var r = detectCandidates(field, options,
+                                        this.maskForField(field.width, field.height));
                record.width = field.width;
                record.height = field.height;
                record.candidates = r.candidates;
@@ -2137,6 +2663,10 @@ var MeteorComposerDialog = class extends Dialog {
       this.refreshList();
       this.updateEnabled();
       this.updateAutosaveLabel();
+      // Before the list is drawn: the overlay over the first frame shown should
+      // be the exclusion these candidates were found with.
+      this.applyMaskSpec(results.mask);
+
       this.offerResume();
    }
 
@@ -3074,6 +3604,22 @@ var MeteorComposerDialog = class extends Dialog {
       if (rotation !== null) {
          this.preview.rotation = normalizeRotation(rotation);
       }
+
+      // The mask describes the site, not the night, so it outlives a session:
+      // the same trees are in the way next time. Stored as JSON rather than as
+      // nine separate keys, because it is one setting.
+      var maskJSON = Settings.read(SETTINGS_KEY + "/mask", DataType.String);
+      if (maskJSON !== null && maskJSON.length > 0) {
+         try {
+            this.applyMaskSpec(JSON.parse(maskJSON));
+         } catch (e) {
+            console.warningln("MeteorComposer: stored mask could not be read: " + e);
+         }
+      }
+
+      // Sets the enabled state of both halves and fills the readout, whether or
+      // not anything was restored.
+      this.maskSourceChanged();
    }
 
    saveSettings() {
@@ -3084,6 +3630,8 @@ var MeteorComposerDialog = class extends Dialog {
       Settings.write(SETTINGS_KEY + "/detailWidth", DataType.Int32, this.detailWidth);
       Settings.write(SETTINGS_KEY + "/rotation", DataType.Int32,
                      normalizeRotation(this.preview.rotation));
+      Settings.write(SETTINGS_KEY + "/mask", DataType.String,
+                     JSON.stringify(this.maskSpec()));
    }
 
    updateEnabled() {
