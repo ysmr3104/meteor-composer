@@ -39,7 +39,7 @@ MeteorComposer は、一眼カメラで撮影した流星群の連番画像か�
 |---|---|---|
 | `javascript/paths.js` | ファイル名・出力先の決定（純粋 JS） | 実装済み |
 | `javascript/detection_core.js` | 検出コア（純粋 JS） | 実装済み |
-| `javascript/mask_geometry.js` | 除外領域 Tier 1 / Tier 2（純粋 JS） | 実装済み・**未 include**（Tier 1 の UI が未着手） |
+| `javascript/mask_geometry.js` | 除外領域 Tier 1 / Tier 2、辺バンド → 半平面の変換、マスク画像の閾値（純粋 JS） | 実装済み・include 済み。**実データ検証は未了** |
 | `javascript/candidate_ops.js` | 共線マージ・横断照合 | 実装済み |
 | `javascript/preview_geometry.js` | オーバーレイの座標変換・ヒットテスト（純粋 JS） | 実装済み |
 | `javascript/session_model.js` | スクリーニング状態・判定・JSON 往復（純粋 JS） | 実装済み |
@@ -156,7 +156,20 @@ PJSR スクリプトの出力は標準出力に出ません。ログとレポー
 
 - **`fileName` / `fileNames` は非推奨。** 正は `filePath` / `filePaths`（`OpenFileDialog` / `SaveFileDialog` 双方）。
 
-- **`TextAlign` というクラスは存在しない。** 正は `TextAlignment`、垂直中央は `VerticalCenter`（`VertCenter` ではない）。旧定数の `TextAlign_Right` からアンダースコアを取っただけでは直らない。**存在しないクラスを参照すると構築時に例外が出て、ダイアログが黙って出ないだけになる。** `tests/ut/test_module_isolation.js` が静的に検査する。
+- **`TextAlign` というクラスは存在しない。** 正は `TextAlignment`。旧定数の `TextAlign_Right` からアンダースコアを取っただけでは直らない。**存在しないクラスを参照すると構築時に例外が出て、ダイアログが黙って出ないだけになる。**
+
+- **クラスは実在してもメンバが実在しないことがあり、こちらのほうが悪質。** 例外が出ないので、式が `undefined` になり `flags | undefined` は `flags` のまま、そのフラグが永久に効かない。**垂直中央は `VertCenter` であって `VerticalCenter` ではない。** `TextAlignment.VerticalCenter` を 11 箇所に書いていて、**1 箇所も中央揃えになっていなかった**（2026-08-18 に実測して発覚）。リファレンスのページは**プロパティは載っているが列挙子は載っていない**ので、ドキュメントを読んでも決まらない。
+
+  **定数のメンバは記憶で書かず、`tests/pjsr/probe_constants.js` で PixInsight に聞くこと。** その出力を `tests/ut/test_module_isolation.js` の `MEMBERS` に貼ると、以後は参照している全定数が静的に検査される。
+
+  ```bash
+  tools/run-remote.sh --pjsr tests/pjsr/probe_constants.js
+  ssh mbp4ysmr cat /tmp/probe_constants.txt
+  ```
+
+- **`CoreApplication.versionString` / `.version` は存在しない**（どちらも `undefined`。実測）。
+
+- **`Bitmap.fill(x0, y0, x1, y1, value)` の `x1` / `y1` は排他**（`Rect` と同じ）。画素 `x0..x1` を塗るなら `fill(x0, y, x1 + 1, y + 1, value)`。アルファは保持され、`drawScaledBitmap` は合成する（実測: `0xff204080` に `0x5aa050ff` を重ねて `0xff4d46ad`）。`tests/pjsr/probe_mask.js`
 
 ## MeteorComposer.js の構文は自動で検査される
 

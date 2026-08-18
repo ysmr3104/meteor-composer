@@ -190,6 +190,257 @@ function excludedFraction(region, width, height) {
    return excluded / total;
 }
 
+// --- Edge bands (the form the UI collects) ---------------------------------
+
+// The dialog does not ask for half-planes. It asks, per edge, "how far in from
+// this edge is excluded, and how much is that boundary tilted" - which is how
+// a landscape intrusion is actually described: the ground covers the bottom
+// tenth and slopes a few degrees.
+//
+//   percent   how far in from the edge, as a percentage of the frame height
+//             (top, bottom) or width (left, right). 0 excludes nothing.
+//   angle     degrees of tilt. Positive rotates the boundary CLOCKWISE on
+//             screen, which is the direction of increasing `angle` in the
+//             (x right, y down) frame the images live in.
+//
+// The tilt pivots at the MIDPOINT of the edge, so the excluded area does not
+// change while the boundary stays inside the frame. That lets the operator set
+// the depth first and then the slope without the depth drifting underneath
+// them. Pivoting at a corner instead would swing the far end wildly.
+var MASK_EDGES = ["top", "bottom", "left", "right"];
+
+function makeEdgeSpec() {
+   var spec = {};
+   for (var i = 0; i < MASK_EDGES.length; ++i) {
+      spec[MASK_EDGES[i]] = { percent: 0, angle: 0 };
+   }
+   return spec;
+}
+
+function clampPercent(p) {
+   var v = Number(p);
+   if (!isFinite(v) || v < 0) {
+      return 0;
+   }
+   return (v > 100) ? 100 : v;
+}
+
+function edgeSpecIsEmpty(spec) {
+   for (var i = 0; i < MASK_EDGES.length; ++i) {
+      var e = spec ? spec[MASK_EDGES[i]] : null;
+      if (!e) {
+         continue;
+      }
+      if (clampPercent(e.percent) !== 0 || (Number(e.angle) || 0) !== 0) {
+         return false;
+      }
+   }
+   return true;
+}
+
+// One edge -> one half-plane, or null when the edge excludes nothing.
+//
+// Zero percent with a non-zero angle is NOT a no-op: the tilted boundary still
+// crosses a corner and cuts a triangle off it. Only both-zero is.
+function edgeHalfPlane(edge, percent, angle, width, height) {
+   var p = clampPercent(percent);
+   var a = Number(angle) || 0;
+   if (p === 0 && a === 0) {
+      return null;
+   }
+   var cx = (width - 1) / 2;
+   var cy = (height - 1) / 2;
+   var px, py, base, keep, depth;
+   switch (edge) {
+   case "top":
+      depth = p / 100 * height;
+      px = cx; py = depth; base = 0; keep = 1;
+      break;
+   case "bottom":
+      depth = p / 100 * height;
+      px = cx; py = (height - 1) - depth; base = 0; keep = -1;
+      break;
+   case "left":
+      depth = p / 100 * width;
+      px = depth; py = cy; base = 90; keep = -1;
+      break;
+   case "right":
+      depth = p / 100 * width;
+      px = (width - 1) - depth; py = cy; base = 90; keep = 1;
+      break;
+   default:
+      return null;
+   }
+   var lineAngle = base + a;
+   var rad = lineAngle * Math.PI / 180;
+   var nx = -Math.sin(rad);
+   var ny = Math.cos(rad);
+   // The line passes through the pivot, so the pivot's signed distance is zero.
+   var offset = (px - cx) * nx + (py - cy) * ny;
+   return makeHalfPlane(lineAngle, offset, keep);
+}
+
+// The four edges combined with "and": a sample survives only if every edge
+// keeps it. "or" would mean one edge alone could rescue a sample another edge
+// cut away, which is not what "the ground is at the bottom AND trees on the
+// left" means.
+function edgeSpecToRegion(spec, width, height) {
+   var planes = [];
+   for (var i = 0; i < MASK_EDGES.length; ++i) {
+      var edge = MASK_EDGES[i];
+      var e = spec ? spec[edge] : null;
+      if (!e) {
+         continue;
+      }
+      var hp = edgeHalfPlane(edge, e.percent, e.angle, width, height);
+      if (hp) {
+         planes.push(hp);
+      }
+   }
+   return makeRegion(planes, "and");
+}
+
+// The two endpoints where an edge's boundary line meets the frame border, for
+// drawing it on the preview. Returns null when the line misses the frame
+// entirely (which happens at 0% with a tilt, on the half that runs off).
+function edgeBoundarySegment(edge, percent, angle, width, height) {
+   var hp = edgeHalfPlane(edge, percent, angle, width, height);
+   if (!hp) {
+      return null;
+   }
+   return halfPlaneSegment(hp, width, height);
+}
+
+// Clip the boundary line against the frame rectangle. Parametrise the line as
+// P0 + t*d with d the line direction, and intersect with the four borders.
+function halfPlaneSegment(halfPlane, width, height) {
+   var rad = halfPlane.angle * Math.PI / 180;
+   var dx = Math.cos(rad);
+   var dy = Math.sin(rad);
+   var nx = -Math.sin(rad);
+   var ny = Math.cos(rad);
+   var cx = (width - 1) / 2;
+   var cy = (height - 1) / 2;
+   // Closest point of the line to the image centre.
+   var x0 = cx + nx * halfPlane.offset;
+   var y0 = cy + ny * halfPlane.offset;
+
+   var hits = [];
+   var w = width - 1;
+   var h = height - 1;
+   var eps = 1e-9;
+
+   if (Math.abs(dx) > eps) {
+      addHit(hits, x0, y0, dx, dy, (0 - x0) / dx, w, h, eps);
+      addHit(hits, x0, y0, dx, dy, (w - x0) / dx, w, h, eps);
+   }
+   if (Math.abs(dy) > eps) {
+      addHit(hits, x0, y0, dx, dy, (0 - y0) / dy, w, h, eps);
+      addHit(hits, x0, y0, dx, dy, (h - y0) / dy, w, h, eps);
+   }
+   if (hits.length < 2) {
+      return null;
+   }
+   hits.sort(function (a, b) { return a.t - b.t; });
+   var first = hits[0];
+   var last = hits[hits.length - 1];
+   if (Math.abs(last.t - first.t) < eps) {
+      return null;
+   }
+   return { x0: first.x, y0: first.y, x1: last.x, y1: last.y };
+}
+
+function addHit(hits, x0, y0, dx, dy, t, w, h, eps) {
+   var x = x0 + dx * t;
+   var y = y0 + dy * t;
+   if (x < -eps || x > w + eps || y < -eps || y > h + eps) {
+      return;
+   }
+   hits.push({ t: t, x: x, y: y });
+}
+
+// --- Mask from a painted image --------------------------------------------
+
+// The operator can paint the exclusion instead of describing it with numbers,
+// which is the only practical option for a tree line. BLACK IS EXCLUDED:
+// painting a region out is the gesture people expect.
+//
+// The painted file is rarely the frame's size (a screenshot, a resized JPEG),
+// so it is sampled by nearest neighbour onto the target grid. Nearest
+// neighbour and not bilinear, because an interpolated edge would produce
+// half-excluded samples with no defensible threshold.
+//
+// lum is a luminance field in [0, 1], row-major, lumWidth by lumHeight.
+function maskFromLuminance(lum, lumWidth, lumHeight, width, height, threshold) {
+   var limit = (threshold === undefined) ? 0.5 : threshold;
+   var out = new Uint8Array(width * height);
+   if (lumWidth <= 0 || lumHeight <= 0) {
+      return out;
+   }
+   for (var y = 0; y < height; ++y) {
+      var sy = Math.floor((y + 0.5) * lumHeight / height);
+      if (sy < 0) {
+         sy = 0;
+      } else if (sy >= lumHeight) {
+         sy = lumHeight - 1;
+      }
+      var srcRow = sy * lumWidth;
+      var dstRow = y * width;
+      for (var x = 0; x < width; ++x) {
+         var sx = Math.floor((x + 0.5) * lumWidth / width);
+         if (sx < 0) {
+            sx = 0;
+         } else if (sx >= lumWidth) {
+            sx = lumWidth - 1;
+         }
+         out[dstRow + x] = (lum[srcRow + sx] >= limit) ? 1 : 0;
+      }
+   }
+   return out;
+}
+
+// Excluded samples as row-aligned runs.
+//
+// The preview overlay is painted from these. A banded or painted mask is made
+// of long solid spans, so a few hundred rectangle fills replace hundreds of
+// thousands of per-pixel writes - which is the difference between an overlay
+// that follows the numbers as they are typed and one that does not.
+function maskRuns(mask, width, height) {
+   var runs = [];
+   for (var y = 0; y < height; ++y) {
+      var row = y * width;
+      var x = 0;
+      while (x < width) {
+         if (mask[row + x]) {
+            ++x;
+            continue;
+         }
+         var start = x;
+         while (x < width && !mask[row + x]) {
+            ++x;
+         }
+         runs.push({ y: y, x0: start, x1: x - 1 });
+      }
+   }
+   return runs;
+}
+
+// Fraction excluded by an explicit inclusion mask, in [0, 1]. Same readout as
+// excludedFraction() but for the painted path, so the UI can report one number
+// whichever source is active.
+function maskExcludedFraction(mask) {
+   if (!mask || mask.length === 0) {
+      return 0;
+   }
+   var excluded = 0;
+   for (var i = 0; i < mask.length; ++i) {
+      if (!mask[i]) {
+         ++excluded;
+      }
+   }
+   return excluded / mask.length;
+}
+
 // --- Zero-border detection -------------------------------------------------
 
 // StarAlignment fills areas outside the registered frame with zero. The shape
@@ -264,6 +515,17 @@ if (typeof module !== "undefined") {
       regionKeeps: regionKeeps,
       buildMask: buildMask,
       excludedFraction: excludedFraction,
+      MASK_EDGES: MASK_EDGES,
+      makeEdgeSpec: makeEdgeSpec,
+      clampPercent: clampPercent,
+      edgeSpecIsEmpty: edgeSpecIsEmpty,
+      edgeHalfPlane: edgeHalfPlane,
+      edgeSpecToRegion: edgeSpecToRegion,
+      edgeBoundarySegment: edgeBoundarySegment,
+      halfPlaneSegment: halfPlaneSegment,
+      maskFromLuminance: maskFromLuminance,
+      maskExcludedFraction: maskExcludedFraction,
+      maskRuns: maskRuns,
       buildValidDataMask: buildValidDataMask,
       erode: erode
    };
