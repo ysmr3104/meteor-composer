@@ -1302,7 +1302,11 @@ var MeteorComposerDialog = class extends Dialog {
       this.maskMode = "edges";
       this.maskEdges = makeEdgeSpec();
       this.maskFilePath = "";
+      // As read from disk, and the same field turned by maskFileRotation. Both
+      // are kept so that changing the turn does not re-read the file.
+      this.maskFileLumRaw = null;
       this.maskFileLum = null;
+      this.maskFileRotation = 0;
       // Opening a frame costs about a second, so the first one is shown once
       // the window is up rather than during construction, where the wait would
       // read as a hang.
@@ -1726,12 +1730,42 @@ var MeteorComposerDialog = class extends Dialog {
          self.chooseMaskFile();
       };
 
+      // A painted mask is read in the FRAME's orientation, and that is not
+      // always the orientation it was painted in - the preview can be turned,
+      // and a file can arrive from anywhere. Turning it here beats sending the
+      // operator back to an image editor, which is what happened the first time
+      // this came up.
+      this.maskRotateLabel = new Label(group);
+      this.maskRotateLabel.text = "Turn:";
+      this.maskRotateLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
+
+      this.maskRotateCombo = new ComboBox(group);
+      this.maskRotations = [0, 90, 180, 270];
+      for (var mr = 0; mr < this.maskRotations.length; ++mr) {
+         this.maskRotateCombo.addItem(this.maskRotations[mr] + " deg");
+      }
+      this.maskRotateCombo.currentItem = 0;
+      this.maskRotateCombo.toolTip =
+         "<p>Turn the mask image clockwise before it is used, in case it was "
+       + "painted or saved in a different orientation from the frame.</p>"
+       + "<p>The mask is read in the frame's own orientation, which is not "
+       + "necessarily the one on screen: turning the preview does not move "
+       + "it.</p>";
+      this.maskRotateCombo.onItemSelected = function (index) {
+         self.maskFileRotation = self.maskRotations[index];
+         self.applyMaskFileRotation();
+         self.refreshMask();
+      };
+
       var rowFile = new HorizontalSizer;
       rowFile.spacing = 6;
       rowFile.add(spacer(pathLabelWidth));
       rowFile.add(this.maskFileRadio);
       rowFile.add(this.maskFileEdit, 100);
       rowFile.add(this.maskFileBrowseButton);
+      rowFile.addSpacing(10);
+      rowFile.add(this.maskRotateLabel);
+      rowFile.add(this.maskRotateCombo);
 
       return [rowEdges, rowFile];
    }
@@ -2117,6 +2151,31 @@ var MeteorComposerDialog = class extends Dialog {
    setRotation(degrees) {
       this.preview.setRotation(degrees);
       this.preview.centreOn(this.preview.selectedIndex);
+      this.refreshFrameLabel();
+   }
+
+   // Said out loud, because a turned preview is otherwise invisible and it
+   // quietly breaks the correspondence between what is on screen and what a
+   // mask file means. The rotation is remembered between sessions, so an
+   // operator can arrive at a turned view they never chose - and then paint a
+   // mask to match what they see, which is not the orientation the file is read
+   // in. That is exactly what happened.
+   rotationNote() {
+      var turn = normalizeRotation(this.preview.rotation);
+      return (turn === 0) ? "" : "   view turned " + turn + " deg";
+   }
+
+   // Re-stamp the note without re-reading the frame.
+   refreshFrameLabel() {
+      var text = this.frameLabel.text;
+      var marker = "   view turned ";
+      var cut = text.indexOf(marker);
+      if (cut >= 0) {
+         text = text.substring(0, cut);
+      }
+      if (text.length > 0) {
+         this.frameLabel.text = text + this.rotationNote();
+      }
    }
 
    // Point the detail pane at the selected candidate. The box is computed in
@@ -2356,6 +2415,8 @@ var MeteorComposerDialog = class extends Dialog {
       }
       this.maskFileEdit.enabled = !edges;
       this.maskFileBrowseButton.enabled = !edges;
+      this.maskRotateLabel.enabled = !edges;
+      this.maskRotateCombo.enabled = !edges;
       this.refreshMask();
    }
 
@@ -2367,7 +2428,10 @@ var MeteorComposerDialog = class extends Dialog {
          cell.end.value = 0;
       }
       this.maskFilePath = "";
+      this.maskFileLumRaw = null;
       this.maskFileLum = null;
+      this.maskFileRotation = 0;
+      this.maskRotateCombo.currentItem = 0;
       this.maskFileEdit.text = "";
       this.maskMode = "edges";
       this.maskEdgesRadio.checked = true;
@@ -2396,16 +2460,19 @@ var MeteorComposerDialog = class extends Dialog {
    setMaskFile(path) {
       this.maskFilePath = path;
       this.maskFileEdit.text = path;
+      this.maskFileLumRaw = null;
       this.maskFileLum = null;
       var failure = null;
       this.cursor = new Cursor(StdCursor.Wait);
       try {
-         this.maskFileLum = loadMaskLuminance(path, MASK_FILE_MAX_SIDE);
+         this.maskFileLumRaw = loadMaskLuminance(path, MASK_FILE_MAX_SIDE);
       } catch (e) {
          failure = "" + e;
       } finally {
          this.cursor = new Cursor(StdCursor.Arrow);
       }
+      this.applyMaskFileRotation();
+      this.reportMaskFile();
       if (this.maskFileLum === null) {
          (new MessageBox(
             "Could not read that image as a mask:\n" + path
@@ -2413,6 +2480,52 @@ var MeteorComposerDialog = class extends Dialog {
             TITLE, StdIcon.Error, StdButton.Ok)).execute();
       }
       this.refreshMask();
+   }
+
+   // Said in the console, because a mask of the wrong shape is stretched to fit
+   // and the stretching does not show in the overlay - a band that should be
+   // level comes out sloped, by a little, and nothing says why.
+   reportMaskFile() {
+      if (this.maskFileLumRaw === null) {
+         return;
+      }
+      var raw = this.maskFileLumRaw;
+      var used = this.maskFileLum;
+      console.writeln("<end><cbr>MeteorComposer: mask image " + raw.width + "x"
+                      + raw.height
+                      + (this.maskFileRotation === 0
+                         ? ""
+                         : ", turned " + this.maskFileRotation + " deg to "
+                           + used.width + "x" + used.height));
+      var frameWidth = this.preview.imageWidth;
+      var frameHeight = this.preview.imageHeight;
+      if (frameWidth <= 0 || frameHeight <= 0) {
+         return;
+      }
+      var maskAspect = used.width / used.height;
+      var frameAspect = frameWidth / frameHeight;
+      console.writeln("                            frame " + frameWidth + "x"
+                      + frameHeight);
+      if (Math.abs(maskAspect / frameAspect - 1) > 0.02) {
+         console.warningln("** The mask image is a different shape from the "
+            + "frame (" + maskAspect.toFixed(3) + " against "
+            + frameAspect.toFixed(3) + "). It is stretched to cover the frame, "
+            + "so straight edges in it will not stay straight. Turning it may "
+            + "be what is needed.");
+      }
+   }
+
+   // The turned copy the rest of the dialog reads. Kept apart from what was read
+   // off disk so that turning the mask costs a rotation, not another trip to the
+   // file.
+   applyMaskFileRotation() {
+      if (this.maskFileLumRaw === null) {
+         this.maskFileLum = null;
+         return;
+      }
+      var raw = this.maskFileLumRaw;
+      this.maskFileLum = rotateLuminance(raw.data, raw.width, raw.height,
+                                         this.maskFileRotation);
    }
 
    // The mask detection is given, at the field's own size.
@@ -2468,7 +2581,8 @@ var MeteorComposerDialog = class extends Dialog {
    // a third of the frame excluded are indistinguishable on disk.
    maskSpec() {
       if (this.maskMode === "file") {
-         return { mode: "file", file: this.maskFilePath };
+         return { mode: "file", file: this.maskFilePath,
+                  rotate: this.maskFileRotation };
       }
       var edges = {};
       for (var i = 0; i < MASK_EDGES.length; ++i) {
@@ -2488,6 +2602,10 @@ var MeteorComposerDialog = class extends Dialog {
       if (spec.mode === "file") {
          this.maskMode = "file";
          this.maskFileRadio.checked = true;
+         // Before the file is read, so the first turn applied is the stored one.
+         var turn = this.maskRotations.indexOf(Number(spec.rotate) || 0);
+         this.maskFileRotation = turn >= 0 ? this.maskRotations[turn] : 0;
+         this.maskRotateCombo.currentItem = turn >= 0 ? turn : 0;
          if (spec.file !== undefined && spec.file !== null && spec.file.length > 0
              && File.exists(spec.file)) {
             this.setMaskFile(spec.file);
@@ -2498,6 +2616,7 @@ var MeteorComposerDialog = class extends Dialog {
          this.maskFilePath = (spec.file === undefined || spec.file === null)
             ? "" : spec.file;
          this.maskFileEdit.text = this.maskFilePath;
+         this.maskFileLumRaw = null;
          this.maskFileLum = null;
          this.maskSourceChanged();
          return;
@@ -2541,7 +2660,7 @@ var MeteorComposerDialog = class extends Dialog {
          this.frameLabel.text = (rendered === null)
             ? "Could not open " + frames[0]
             : frames[0] + "   " + rendered.width + "x" + rendered.height
-              + "   (first frame)";
+              + "   (first frame)" + this.rotationNote();
       } finally {
          this.cursor = new Cursor(StdCursor.Arrow);
       }
@@ -2942,7 +3061,8 @@ var MeteorComposerDialog = class extends Dialog {
             return;
          }
          this.frameLabel.text = row.file
-            + "   " + rendered.width + "x" + rendered.height;
+            + "   " + rendered.width + "x" + rendered.height
+            + this.rotationNote();
       } finally {
          this.cursor = new Cursor(StdCursor.Arrow);
       }
