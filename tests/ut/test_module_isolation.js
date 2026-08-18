@@ -27,6 +27,7 @@
 
 var fs = require("fs");
 var path = require("path");
+var vm = require("vm");
 
 var passed = 0;
 var failed = 0;
@@ -207,6 +208,47 @@ suite("the PixInsight preprocessor can read every file", function () {
 //----------------------------------------------------------------------------
 
 var MAIN = path.join(JS_DIR, "MeteorComposer.js");
+
+// Strip the preprocessor directives, leaving something a JavaScript parser can
+// read. Line continuations matter: #feature-info spans two lines with a
+// backslash, and removing only the first leaves the second as bare prose.
+function withoutDirectives(source) {
+   var lines = source.split("\n");
+   var out = [];
+   var continuing = false;
+   for (var i = 0; i < lines.length; ++i) {
+      var line = lines[i];
+      var isDirective = continuing || /^\s*#[a-zA-Z]/.test(line);
+      continuing = isDirective && /\\\s*$/.test(line);
+      out.push(isDirective ? "" : line);
+   }
+   return out.join("\n");
+}
+
+suite("MeteorComposer.js parses as JavaScript", function () {
+   // Nothing else checked this. The pure modules are require()d by their own
+   // tests, so a syntax error in one of them fails loudly; MeteorComposer.js is
+   // full of PJSR objects and preprocessor directives, so no test loaded it at
+   // all, and the only way to find a broken edit was to run PixInsight - where
+   // the error appears in the Process Console and nowhere else.
+   //
+   // Parsed, not executed. Executing it would need the whole PJSR object model;
+   // parsing needs nothing and catches the entire class of defect that comes
+   // from editing a three-thousand-line file.
+   if (!fs.existsSync(MAIN)) {
+      return;
+   }
+   var stripped = withoutDirectives(fs.readFileSync(MAIN, "utf8"));
+   var error = null;
+   try {
+      new vm.Script(stripped, { filename: "MeteorComposer.js" });
+   } catch (e) {
+      error = e;
+   }
+   ok(error === null,
+      "the source parses" + (error !== null ? ": " + error.message : ""));
+});
+
 
 // Globals supplied by the JavaScript language or by PixInsight itself. A bare
 // call to any of these is not our concern.

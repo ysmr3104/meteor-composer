@@ -113,6 +113,35 @@ suite("defaultOutputDir", function () {
          "a relative name with no parent stays as it is");
 });
 
+suite("frameTag", function () {
+   // The column holding these is one of eight in a pane a few hundred pixels
+   // wide. The full name is 47 characters, of which the operator says four
+   // out loud.
+   equal(paths.frameTag("pct-2026-08-12_005413_ILCE-7M3_DSC04908_d_r.xisf"),
+         "DSC04908", "the camera's frame counter is what is left");
+   equal(paths.frameTag("/a/b/pct-2026-08-12_031451_ILCE-7M3_DSC05542_d_r.xisf"),
+         "DSC05542", "a full path is reduced the same way");
+   equal(paths.frameTag("light_0042_r.xisf"), "0042",
+         "another naming scheme still yields its counter");
+
+   // The LAST run of digits, because what comes before it is the date, the time
+   // and the camera model - all identical across a session.
+   equal(paths.frameTag("2026-08-12_005413_DSC04908.xisf"), "DSC04908",
+         "the date and time do not win over the counter");
+
+   // Degrading gracefully beats being clever and wrong.
+   equal(paths.frameTag("master.xisf"), "master",
+         "a name with no counter is returned whole");
+   equal(paths.frameTag(""), "", "and nothing in gives nothing out");
+   equal(paths.frameTag(null), "", "as does null");
+
+   // Two different frames must not collapse to the same tag, or the column
+   // would be actively misleading.
+   ok(paths.frameTag("pct_ILCE-7M3_DSC05069_d_r.xisf")
+      !== paths.frameTag("pct_ILCE-7M3_DSC05070_d_r.xisf"),
+      "consecutive frames keep distinct tags");
+});
+
 //----------------------------------------------------------------------------
 
 console.log("\n============================================");

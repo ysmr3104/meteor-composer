@@ -66,6 +66,37 @@ function defaultOutputDir(framesDir) {
    return parent;
 }
 
+// A short name for a frame, for a column that has to hold hundreds of rows.
+//
+// The frames are named things like
+//
+//   pct-2026-08-12_005413_ILCE-7M3_DSC04908_d_r.xisf
+//
+// which is 47 characters of which two matter. Put in a list column it either
+// eats the width the other columns need or is cut off in the middle, and both
+// happened. What an operator says out loud is "4908".
+//
+// The rule: the last run of at least three digits, with any letters
+// immediately before it. That is the frame counter in every naming scheme met
+// so far - the camera's DSC04908, a plain light_0042 - and the digits come last
+// because what precedes them is the date, the time and the camera model, which
+// are the same for every frame of a session.
+//
+// Falls back to the whole name when there is nothing that looks like a counter,
+// which is better than returning something clever and wrong. The full name is
+// never thrown away: it goes in the row's tooltip and above the preview.
+function frameTag(fileName) {
+   if (fileName === null || fileName === undefined) {
+      return "";
+   }
+   var name = baseName(fileName).replace(/\.[^.]*$/, "");
+   var matches = name.match(/[A-Za-z]*[0-9]{3,}/g);
+   if (matches === null || matches.length === 0) {
+      return name;
+   }
+   return matches[matches.length - 1];
+}
+
 // --- Exports ---------------------------------------------------------------
 
 if (typeof module !== "undefined") {
@@ -73,6 +104,7 @@ if (typeof module !== "undefined") {
       isRealXisf: isRealXisf,
       baseName: baseName,
       directoryOf: directoryOf,
-      defaultOutputDir: defaultOutputDir
+      defaultOutputDir: defaultOutputDir,
+      frameTag: frameTag
    };
 }
