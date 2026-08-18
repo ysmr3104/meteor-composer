@@ -278,33 +278,30 @@ suite("buildMask feeds detection_core and suppresses an excluded trail", functio
 //----------------------------------------------------------------------------
 // Edge bands
 //
-// The dialog collects "percent in from this edge" plus "degrees of tilt". A
-// band of p percent on the top of an H-pixel frame excludes the rows above
-// y = p/100*H, so it excludes p percent of the frame. Expected fractions below
-// come from that definition; nothing here reads the implementation back.
+// The dialog collects, per edge, how far in the band reaches at each END of
+// that edge - two percentages, never negative. The boundary runs through both,
+// so the excluded band is a trapezoid and its area is the MEAN of the two.
+// Expected values below come from that definition.
 //----------------------------------------------------------------------------
 
 suite("edgeHalfPlane: nothing set means no half-plane", function () {
    for (var i = 0; i < mg.MASK_EDGES.length; ++i) {
       var edge = mg.MASK_EDGES[i];
       ok(mg.edgeHalfPlane(edge, 0, 0, 100, 100) === null,
-         edge + " at 0% and 0 degrees excludes nothing");
+         edge + " at 0% on both ends excludes nothing");
    }
 });
 
-suite("edgeHalfPlane: zero percent with a tilt is not a no-op", function () {
-   // The tilted boundary still crosses a corner, so a triangle is cut off.
-   var hp = mg.edgeHalfPlane("top", 0, 10, 200, 200);
-   ok(hp !== null, "0% with a tilt still produces a half-plane");
-   var region = mg.makeRegion([hp], "and");
-   var frac = mg.excludedFraction(region, 200, 200);
-   // Half the frame width times its rise, over the frame area:
-   //   (1/2 * 100 * 100*tan10) / (200*200)
-   var expect = 0.5 * 100 * 100 * Math.tan(10 * Math.PI / 180) / (200 * 200);
-   close(frac, expect, 0.005, "a triangle of the expected size is excluded");
+suite("edgeHalfPlane: one end alone is not a no-op", function () {
+   // A band that reaches in at one end and nowhere at the other is a triangle.
+   var w = 200, h = 200;
+   var region = mg.makeRegion([mg.edgeHalfPlane("top", 0, 20, w, h)], "and");
+   var frac = mg.excludedFraction(region, w, h);
+   // Mean of 0 and 20 is 10.
+   close(frac, 0.10, 0.006, "0% at one end and 20% at the other excludes 10%");
 });
 
-suite("edgeHalfPlane: a band excludes its own percentage", function () {
+suite("edgeHalfPlane: a level band excludes its own percentage", function () {
    var w = 300, h = 200;
    var cases = [
       { edge: "top", percent: 10 },
@@ -316,62 +313,83 @@ suite("edgeHalfPlane: a band excludes its own percentage", function () {
    ];
    for (var i = 0; i < cases.length; ++i) {
       var c = cases[i];
-      var region = mg.makeRegion([mg.edgeHalfPlane(c.edge, c.percent, 0, w, h)], "and");
+      var region = mg.makeRegion(
+         [mg.edgeHalfPlane(c.edge, c.percent, c.percent, w, h)], "and");
       close(mg.excludedFraction(region, w, h), c.percent / 100, 0.006,
-            c.edge + " " + c.percent + "% excludes that fraction");
+            c.edge + " at " + c.percent + "% on both ends excludes that fraction");
+   }
+});
+
+suite("edgeHalfPlane: a sloped band excludes the mean of its ends", function () {
+   // This is the property that makes the numbers predictable: 8 and 14 is 11%,
+   // and the operator can read the readout as "about the average of what I
+   // typed" rather than having to think about geometry.
+   var w = 400, h = 400;
+   var cases = [
+      { edge: "bottom", a: 8, b: 14 },
+      { edge: "bottom", a: 20, b: 5 },
+      { edge: "top", a: 0, b: 30 },
+      { edge: "left", a: 12, b: 4 },
+      { edge: "right", a: 3, b: 21 }
+   ];
+   for (var i = 0; i < cases.length; ++i) {
+      var c = cases[i];
+      var region = mg.makeRegion([mg.edgeHalfPlane(c.edge, c.a, c.b, w, h)], "and");
+      close(mg.excludedFraction(region, w, h), (c.a + c.b) / 200, 0.006,
+            c.edge + " " + c.a + "/" + c.b + " excludes their mean");
    }
 });
 
 suite("edgeHalfPlane: which side is kept", function () {
    var w = 300, h = 200;
    // top 10% of 200 rows -> the boundary sits at y = 20.
-   var top = mg.edgeHalfPlane("top", 10, 0, w, h);
+   var top = mg.edgeHalfPlane("top", 10, 10, w, h);
    ok(!mg.halfPlaneKeeps(top, 150, 5, w, h), "top band excludes a row above the boundary");
    ok(mg.halfPlaneKeeps(top, 150, 100, w, h), "top band keeps the middle of the frame");
    ok(mg.halfPlaneKeeps(top, 150, 195, w, h), "top band keeps the opposite edge");
 
-   var bottom = mg.edgeHalfPlane("bottom", 10, 0, w, h);
+   var bottom = mg.edgeHalfPlane("bottom", 10, 10, w, h);
    ok(!mg.halfPlaneKeeps(bottom, 150, 195, w, h), "bottom band excludes the bottom rows");
    ok(mg.halfPlaneKeeps(bottom, 150, 5, w, h), "bottom band keeps the top rows");
 
-   var left = mg.edgeHalfPlane("left", 10, 0, w, h);
+   var left = mg.edgeHalfPlane("left", 10, 10, w, h);
    ok(!mg.halfPlaneKeeps(left, 5, 100, w, h), "left band excludes the left columns");
    ok(mg.halfPlaneKeeps(left, 295, 100, w, h), "left band keeps the right columns");
 
-   var right = mg.edgeHalfPlane("right", 10, 0, w, h);
+   var right = mg.edgeHalfPlane("right", 10, 10, w, h);
    ok(!mg.halfPlaneKeeps(right, 295, 100, w, h), "right band excludes the right columns");
    ok(mg.halfPlaneKeeps(right, 5, 100, w, h), "right band keeps the left columns");
 });
 
-suite("edgeHalfPlane: the tilt pivots at the middle of the edge", function () {
-   // This is the whole reason for choosing the midpoint: the operator sets the
-   // depth first, then the slope, and the depth must not drift while they do.
+suite("edgeHalfPlane: the first number is the end nearest the origin", function () {
+   // top and bottom read left end first; left and right read top end first.
+   // Getting these round the wrong way would put the slope the other way and
+   // nothing about the excluded area would reveal it - the mean is the same.
    var w = 400, h = 400;
-   var base = mg.excludedFraction(
-      mg.makeRegion([mg.edgeHalfPlane("bottom", 20, 0, w, h)], "and"), w, h);
-   var angles = [-8, -5, -2, 2, 5, 8];
-   for (var i = 0; i < angles.length; ++i) {
-      var frac = mg.excludedFraction(
-         mg.makeRegion([mg.edgeHalfPlane("bottom", 20, angles[i], w, h)], "and"), w, h);
-      close(frac, base, 0.004,
-            "bottom 20% keeps its area at " + angles[i] + " degrees");
-   }
-});
 
-suite("edgeHalfPlane: positive angle rotates clockwise on screen", function () {
-   // Frame 400x400, bottom 20% -> the pivot is at ((399)/2, 399-80) = (199.5, 319).
-   // At +5 degrees the boundary runs down towards +x, so at the left border it
-   // sits HIGHER than the pivot and the excluded band is thicker there.
-   var w = 400, h = 400;
-   var hp = mg.edgeHalfPlane("bottom", 20, 5, w, h);
-   ok(!mg.halfPlaneKeeps(hp, 0, 319, w, h),
-      "the pivot's height is already excluded at the left border");
-   ok(mg.halfPlaneKeeps(hp, 399, 319, w, h),
-      "the same height is still kept at the right border");
+   var top = mg.edgeHalfPlane("top", 0, 40, w, h);
+   ok(mg.halfPlaneKeeps(top, 5, 5, w, h),
+      "top 0/40: the left end is not covered");
+   ok(!mg.halfPlaneKeeps(top, 395, 5, w, h),
+      "top 0/40: the right end is");
 
-   var hpNeg = mg.edgeHalfPlane("bottom", 20, -5, w, h);
-   ok(mg.halfPlaneKeeps(hpNeg, 0, 319, w, h), "a negative angle mirrors it: left kept");
-   ok(!mg.halfPlaneKeeps(hpNeg, 399, 319, w, h), "a negative angle mirrors it: right excluded");
+   var bottom = mg.edgeHalfPlane("bottom", 40, 0, w, h);
+   ok(!mg.halfPlaneKeeps(bottom, 5, 395, w, h),
+      "bottom 40/0: the left end is covered");
+   ok(mg.halfPlaneKeeps(bottom, 395, 395, w, h),
+      "bottom 40/0: the right end is not");
+
+   var left = mg.edgeHalfPlane("left", 40, 0, w, h);
+   ok(!mg.halfPlaneKeeps(left, 5, 5, w, h),
+      "left 40/0: the top end is covered");
+   ok(mg.halfPlaneKeeps(left, 5, 395, w, h),
+      "left 40/0: the bottom end is not");
+
+   var right = mg.edgeHalfPlane("right", 0, 40, w, h);
+   ok(mg.halfPlaneKeeps(right, 395, 5, w, h),
+      "right 0/40: the top end is not covered");
+   ok(!mg.halfPlaneKeeps(right, 395, 395, w, h),
+      "right 0/40: the bottom end is");
 });
 
 suite("clampPercent", function () {
@@ -383,11 +401,11 @@ suite("clampPercent", function () {
    ok(mg.clampPercent("12") === 12, "a numeric string is accepted (the UI hands us text)");
 });
 
-suite("edgeHalfPlane: 100% excludes the whole frame", function () {
+suite("edgeHalfPlane: 100% on both ends excludes the whole frame", function () {
    var w = 60, h = 40;
    for (var i = 0; i < mg.MASK_EDGES.length; ++i) {
       var edge = mg.MASK_EDGES[i];
-      var region = mg.makeRegion([mg.edgeHalfPlane(edge, 100, 0, w, h)], "and");
+      var region = mg.makeRegion([mg.edgeHalfPlane(edge, 100, 100, w, h)], "and");
       close(mg.excludedFraction(region, w, h), 1.0, 1e-12,
             edge + " at 100% excludes every sample");
    }
@@ -401,18 +419,20 @@ suite("edgeSpecIsEmpty", function () {
    var spec = mg.makeEdgeSpec();
    ok(mg.edgeSpecIsEmpty(spec), "a fresh spec excludes nothing");
    ok(mg.edgeSpecIsEmpty(null), "a missing spec excludes nothing");
-   spec.bottom.percent = 10;
-   ok(!mg.edgeSpecIsEmpty(spec), "a depth makes it non-empty");
-   spec.bottom.percent = 0;
-   spec.bottom.angle = 3;
-   ok(!mg.edgeSpecIsEmpty(spec), "a tilt alone also makes it non-empty");
+   spec.bottom.start = 10;
+   ok(!mg.edgeSpecIsEmpty(spec), "a depth at one end makes it non-empty");
+   spec.bottom.start = 0;
+   spec.bottom.end = 3;
+   ok(!mg.edgeSpecIsEmpty(spec), "a depth at the other end does too");
 });
 
 suite("edgeSpecToRegion: the edges combine with and", function () {
    var w = 200, h = 200;
    var spec = mg.makeEdgeSpec();
-   spec.top.percent = 10;
-   spec.bottom.percent = 10;
+   spec.top.start = 10;
+   spec.top.end = 10;
+   spec.bottom.start = 10;
+   spec.bottom.end = 10;
    var region = mg.edgeSpecToRegion(spec, w, h);
    ok(region.halfPlanes.length === 2, "only the edges that are set become half-planes");
    ok(region.mode === "and", "the mode is and");
@@ -429,8 +449,10 @@ suite("edgeSpecToRegion: overlapping bands do not double-count", function () {
    // is excluded by both, and the union - not the sum - is what is lost.
    var w = 200, h = 100;
    var spec = mg.makeEdgeSpec();
-   spec.left.percent = 60;
-   spec.right.percent = 60;
+   spec.left.start = 60;
+   spec.left.end = 60;
+   spec.right.start = 60;
+   spec.right.end = 60;
    var frac = mg.excludedFraction(mg.edgeSpecToRegion(spec, w, h), w, h);
    close(frac, 1.0, 1e-12, "the two bands together cover the frame exactly once");
 });
@@ -438,7 +460,8 @@ suite("edgeSpecToRegion: overlapping bands do not double-count", function () {
 suite("buildMask: an edge spec produces the mask detection consumes", function () {
    var w = 40, h = 40;
    var spec = mg.makeEdgeSpec();
-   spec.bottom.percent = 25;   // rows below y = 39 - 10 = 29
+   spec.bottom.start = 25;   // rows below y = 39 - 10 = 29
+   spec.bottom.end = 25;
    var mask = mg.buildMask(mg.edgeSpecToRegion(spec, w, h), w, h);
    ok(mask.length === w * h, "the mask covers the field");
    ok(mask[10 * w + 20] === 1, "a sample in the kept part is 1");
@@ -449,16 +472,16 @@ suite("buildMask: an edge spec produces the mask detection consumes", function (
 // Boundary segments for the preview overlay
 //----------------------------------------------------------------------------
 
-suite("edgeBoundarySegment: horizontal and vertical boundaries", function () {
+suite("edgeBoundarySegment: level boundaries", function () {
    var w = 100, h = 200;
-   var seg = mg.edgeBoundarySegment("top", 10, 0, w, h);   // y = 20
+   var seg = mg.edgeBoundarySegment("top", 10, 10, w, h);   // y = 20
    ok(seg !== null, "the top boundary crosses the frame");
    close(Math.min(seg.x0, seg.x1), 0, 1e-9, "it starts at the left border");
    close(Math.max(seg.x0, seg.x1), w - 1, 1e-9, "it ends at the right border");
    close(seg.y0, 20, 1e-9, "at the depth the percentage asks for");
    close(seg.y1, 20, 1e-9, "and it is level");
 
-   var left = mg.edgeBoundarySegment("left", 10, 0, w, h);   // x = 10
+   var left = mg.edgeBoundarySegment("left", 10, 10, w, h);   // x = 10
    ok(left !== null, "the left boundary crosses the frame");
    close(left.x0, 10, 1e-9, "it is vertical at the depth asked for");
    close(left.x1, 10, 1e-9, "at both ends");
@@ -466,24 +489,26 @@ suite("edgeBoundarySegment: horizontal and vertical boundaries", function () {
    close(Math.max(left.y0, left.y1), h - 1, 1e-9, "to the bottom border");
 });
 
-suite("edgeBoundarySegment: a tilted boundary stays inside the frame", function () {
+suite("edgeBoundarySegment: a sloped boundary passes through both depths", function () {
    var w = 300, h = 300;
-   var seg = mg.edgeBoundarySegment("bottom", 20, 7, w, h);
-   ok(seg !== null, "the tilted boundary crosses the frame");
+   var seg = mg.edgeBoundarySegment("bottom", 10, 25, w, h);
+   ok(seg !== null, "the sloped boundary crosses the frame");
    ok(seg.x0 >= -1e-6 && seg.x0 <= w - 1 + 1e-6
       && seg.x1 >= -1e-6 && seg.x1 <= w - 1 + 1e-6, "x stays in range");
    ok(seg.y0 >= -1e-6 && seg.y0 <= h - 1 + 1e-6
       && seg.y1 >= -1e-6 && seg.y1 <= h - 1 + 1e-6, "y stays in range");
-   // The pivot is on the line: at x = (w-1)/2 the line is at y = (h-1) - 0.2*h.
-   var t = ((w - 1) / 2 - seg.x0) / (seg.x1 - seg.x0);
-   close(seg.y0 + t * (seg.y1 - seg.y0), (h - 1) - 0.20 * h, 1e-6,
-         "and it passes through the pivot");
+
+   // At x = 0 it should sit 10% up from the bottom, at x = w-1, 25% up.
+   var atLeft = (seg.x0 < seg.x1) ? seg.y0 : seg.y1;
+   var atRight = (seg.x0 < seg.x1) ? seg.y1 : seg.y0;
+   close(atLeft, (h - 1) - 0.10 * h, 1e-6, "the left end is at the first depth");
+   close(atRight, (h - 1) - 0.25 * h, 1e-6, "the right end is at the second");
 });
 
 suite("edgeBoundarySegment: nothing to draw when the line misses the frame", function () {
    ok(mg.edgeBoundarySegment("top", 0, 0, 100, 100) === null,
       "an unset edge has no boundary");
-   ok(mg.edgeBoundarySegment("top", 100, 0, 100, 100) === null,
+   ok(mg.edgeBoundarySegment("top", 100, 100, 100, 100) === null,
       "at 100% the boundary sits past the last row, so there is no segment");
 });
 
@@ -569,7 +594,8 @@ suite("edge band and detection: a trail in the band is not reported", function (
    // The trail runs from y=250 to y=280 in a 300-row frame: a bottom band of
    // 20% reaches up to y = 299 - 60 = 239, so it covers the whole trail.
    var spec = mg.makeEdgeSpec();
-   spec.bottom.percent = 20;
+   spec.bottom.start = 20;
+   spec.bottom.end = 20;
    var mask = mg.buildMask(mg.edgeSpecToRegion(spec, f.width, f.height), f.width, f.height);
    var after = core.detectCandidates(f, { k: 5, minPixels: 20, minElongation: 6 }, mask);
    ok(after.candidates.length === 0,
@@ -582,7 +608,8 @@ suite("edge band and detection: a trail outside the band survives", function () 
    syn.addLine(f, 40, 60, 340, 90, 2.0, 0.06);
 
    var spec = mg.makeEdgeSpec();
-   spec.bottom.percent = 20;
+   spec.bottom.start = 20;
+   spec.bottom.end = 20;
    var mask = mg.buildMask(mg.edgeSpecToRegion(spec, f.width, f.height), f.width, f.height);
    var after = core.detectCandidates(f, { k: 5, minPixels: 20, minElongation: 6 }, mask);
    ok(after.candidates.length >= 1,
@@ -649,9 +676,10 @@ suite("maskRuns: an all-keep mask has no runs", function () {
 suite("maskRuns: a real edge band accounts for its own area", function () {
    var w = 120, h = 80;
    var spec = mg.makeEdgeSpec();
-   spec.bottom.percent = 15;
-   spec.bottom.angle = 6;
-   spec.left.percent = 8;
+   spec.bottom.start = 12;
+   spec.bottom.end = 18;
+   spec.left.start = 8;
+   spec.left.end = 8;
    var mask = mg.buildMask(mg.edgeSpecToRegion(spec, w, h), w, h);
    var runs = mg.maskRuns(mask, w, h);
    var covered = 0;

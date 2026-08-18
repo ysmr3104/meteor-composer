@@ -1562,14 +1562,20 @@ var MeteorComposerDialog = class extends Dialog {
    // a pair, where the frames are read and where the results are written, and
    // a mask is neither. It is a detection setting, so it belongs next to Run
    // detection.
+   //
+   // Two spin boxes per edge, for the depth at each end. Not a depth and a
+   // tilt: a tilt is signed, and PJSR's SpinBox silently refuses negative
+   // values (tests/pjsr/probe_layout.js), so half of every tilt would have been
+   // unreachable. Depths are never negative, so all eight numbers step with the
+   // keyboard and there is no sign convention to explain.
+   //
+   // One row and not two. Measured: the eight spin boxes and their labels come
+   // to about 700 px, which leaves room even at the dialog's minimum width.
    buildMaskRows(pathLabelWidth) {
       var self = this;
       var group = this.sourceGroup;
-      var editWidth = this.font.width("00000");
       var nameWidth = this.font.width("Bottom:") + 6;
-      var tiltWidth = this.font.width("tilt:") + 6;
       var pcWidth = this.font.width("%") + 4;
-      var degWidth = this.font.width("deg") + 4;
 
       this.maskLabel = new Label(group);
       this.maskLabel.text = "Mask:";
@@ -1578,11 +1584,10 @@ var MeteorComposerDialog = class extends Dialog {
 
       this.maskEdgesRadio = new RadioButton(group);
       this.maskEdgesRadio.text = "Edges";
-      this.maskEdgesRadio.checked = true;
       this.maskEdgesRadio.toolTip =
-         "<p>Exclude a band along one or more edges of the frame, as a "
-       + "percentage of the frame plus an optional tilt.</p>"
+         "<p>Exclude a band along one or more edges of the frame.</p>"
        + "<p>All zero excludes nothing.</p>";
+      this.maskEdgesRadio.checked = true;
       this.maskEdgesRadio.onCheck = function (checked) {
          if (checked) {
             self.maskMode = "edges";
@@ -1603,8 +1608,7 @@ var MeteorComposerDialog = class extends Dialog {
       };
 
       // A RadioButton asks for a comfortable minimum width, and two of them
-      // asking for it pushed the numbers out of the group. Sized to what they
-      // hold, the same correction the preview toolbar needed.
+      // asking for it pushed the numbers out of the group.
       var radioWidth = Math.max(this.font.width(this.maskEdgesRadio.text),
                                 this.font.width(this.maskFileRadio.text)) + 30;
       this.maskEdgesRadio.setFixedWidth(radioWidth);
@@ -1612,19 +1616,39 @@ var MeteorComposerDialog = class extends Dialog {
 
       this.maskEdgeControls = {};
 
-      var makeCell = function (edge, name) {
-         var percent = new NumericEdit(group);
-         percent.label.text = name + ":";
-         percent.label.setFixedWidth(nameWidth);
-         percent.setRange(0, 100);
-         percent.setReal(true);
-         percent.setPrecision(1);
-         percent.setValue(self.maskEdges[edge].percent);
-         percent.edit.setFixedWidth(editWidth);
-         percent.toolTip = "<p>How far in from the " + name.toLowerCase()
-                         + " edge is excluded, as a percentage of the frame.</p>";
-         percent.onValueUpdated = function (value) {
-            self.maskEdges[edge].percent = value;
+      // "start" is the end nearest the origin: the left end for the top and
+      // bottom edges, the top end for the left and right ones. Said in the
+      // tooltip too, because the order of two identical boxes is not
+      // self-evident and getting it backwards mirrors the slope while leaving
+      // the excluded area - and so the readout - unchanged.
+      var makeCell = function (edge, name, firstEnd, secondEnd) {
+         var nameLabel = new Label(group);
+         nameLabel.text = name + ":";
+         nameLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
+         nameLabel.setFixedWidth(nameWidth);
+
+         var tip = "<p>How far in from the " + name.toLowerCase()
+                 + " edge is excluded, as a percentage of the frame.</p>"
+                 + "<p>Two numbers: the depth at the " + firstEnd + " end, then "
+                 + "at the " + secondEnd + " end. Equal numbers give a straight "
+                 + "band; different ones slope it.</p>";
+
+         var spins = [];
+         for (var k = 0; k < 2; ++k) {
+            var spin = new SpinBox(group);
+            spin.setRange(0, 100);
+            spin.stepSize = 1;
+            spin.toolTip = tip;
+            spins.push(spin);
+         }
+         spins[0].value = self.maskEdges[edge].start;
+         spins[1].value = self.maskEdges[edge].end;
+         spins[0].onValueUpdated = function (value) {
+            self.maskEdges[edge].start = value;
+            self.refreshMask();
+         };
+         spins[1].onValueUpdated = function (value) {
+            self.maskEdges[edge].end = value;
             self.refreshMask();
          };
 
@@ -1632,39 +1656,16 @@ var MeteorComposerDialog = class extends Dialog {
          pcLabel.text = "%";
          pcLabel.textAlignment = TextAlignment.Left | TextAlignment.VertCenter;
          pcLabel.setFixedWidth(pcWidth);
+         pcLabel.toolTip = tip;
 
-         var angle = new NumericEdit(group);
-         angle.label.text = "tilt:";
-         angle.label.setFixedWidth(tiltWidth);
-         angle.setRange(-45, 45);
-         angle.setReal(true);
-         angle.setPrecision(1);
-         angle.setValue(self.maskEdges[edge].angle);
-         angle.edit.setFixedWidth(editWidth);
-         angle.toolTip =
-            "<p>Tilt of the boundary in degrees. Positive turns it clockwise "
-          + "on screen.</p>"
-          + "<p>The tilt pivots at the middle of the edge, so the excluded area "
-          + "stays where you set it while you adjust the slope.</p>";
-         angle.onValueUpdated = function (value) {
-            self.maskEdges[edge].angle = value;
-            self.refreshMask();
-         };
-
-         var degLabel = new Label(group);
-         degLabel.text = "deg";
-         degLabel.textAlignment = TextAlignment.Left | TextAlignment.VertCenter;
-         degLabel.setFixedWidth(degWidth);
-
-         self.maskEdgeControls[edge] = { percent: percent, angle: angle };
+         self.maskEdgeControls[edge] = { start: spins[0], end: spins[1] };
 
          var cell = new HorizontalSizer;
          cell.spacing = 2;
-         cell.add(percent);
+         cell.add(nameLabel);
+         cell.add(spins[0]);
+         cell.add(spins[1]);
          cell.add(pcLabel);
-         cell.addSpacing(6);
-         cell.add(angle);
-         cell.add(degLabel);
          return cell;
       };
 
@@ -1675,26 +1676,33 @@ var MeteorComposerDialog = class extends Dialog {
          return label;
       };
 
-      // Two rows of two rather than one row of four: four cells side by side
-      // came to more than seven hundred pixels, and this group shares the
-      // window with three panes.
-      var rowA = new HorizontalSizer;
-      rowA.spacing = 6;
-      rowA.add(this.maskLabel);
-      rowA.add(this.maskEdgesRadio);
-      rowA.add(makeCell("top", "Top"));
-      rowA.addSpacing(14);
-      rowA.add(makeCell("left", "Left"));
-      rowA.addStretch();
+      // The one number that makes over-masking visible. Nothing else in the
+      // dialog would show it: detection would simply find less, and quietly.
+      this.maskReadout = new Label(group);
+      this.maskReadout.text = "Excluded: none";
+      this.maskReadout.textAlignment = TextAlignment.Left | TextAlignment.VertCenter;
+      this.maskReadout.toolTip =
+         "<p>How much of the frame the mask excludes. Detection never looks "
+       + "there, and it is not counted in the statistics either.</p>"
+       + "<p>Worth watching: over-masking costs meteors and there is no other "
+       + "sign of it - the candidate list simply comes back shorter.</p>";
+      // Fixed to its widest text, so it cannot squeeze the row's other items
+      // when the number grows.
+      this.maskReadout.setFixedWidth(this.font.width("Excluded: 100.0%") + 8);
 
-      var rowB = new HorizontalSizer;
-      rowB.spacing = 6;
-      rowB.add(spacer(pathLabelWidth));
-      rowB.add(spacer(radioWidth));
-      rowB.add(makeCell("bottom", "Bottom"));
-      rowB.addSpacing(14);
-      rowB.add(makeCell("right", "Right"));
-      rowB.addStretch();
+      var rowEdges = new HorizontalSizer;
+      rowEdges.spacing = 6;
+      rowEdges.add(this.maskLabel);
+      rowEdges.add(this.maskEdgesRadio);
+      rowEdges.add(makeCell("top", "Top", "left", "right"));
+      rowEdges.addSpacing(8);
+      rowEdges.add(makeCell("bottom", "Bottom", "left", "right"));
+      rowEdges.addSpacing(8);
+      rowEdges.add(makeCell("left", "Left", "top", "bottom"));
+      rowEdges.addSpacing(8);
+      rowEdges.add(makeCell("right", "Right", "top", "bottom"));
+      rowEdges.addStretch();
+      rowEdges.add(this.maskReadout);
 
       this.maskFileEdit = new Edit(group);
       this.maskFileEdit.readOnly = true;
@@ -1710,35 +1718,14 @@ var MeteorComposerDialog = class extends Dialog {
          self.chooseMaskFile();
       };
 
-      this.maskClearButton = new PushButton(group);
-      this.maskClearButton.text = "Clear";
-      this.maskClearButton.toolTip =
-         "<p>Put every edge back to zero and forget the painted mask, so that "
-       + "nothing is excluded.</p>";
-      this.maskClearButton.setFixedWidth(
-         this.font.width(this.maskClearButton.text) + 20);
-      this.maskClearButton.onClick = function () {
-         self.clearMask();
-      };
+      var rowFile = new HorizontalSizer;
+      rowFile.spacing = 6;
+      rowFile.add(spacer(pathLabelWidth));
+      rowFile.add(this.maskFileRadio);
+      rowFile.add(this.maskFileEdit, 100);
+      rowFile.add(this.maskFileBrowseButton);
 
-      // The one number that makes over-masking visible. Nothing else in the
-      // dialog would show it: detection would simply find less, and quietly.
-      this.maskReadout = new Label(group);
-      this.maskReadout.text = "Excluded: none";
-      this.maskReadout.textAlignment = TextAlignment.Left | TextAlignment.VertCenter;
-
-      var rowC = new HorizontalSizer;
-      rowC.spacing = 6;
-      rowC.add(spacer(pathLabelWidth));
-      rowC.add(this.maskFileRadio);
-      rowC.add(this.maskFileEdit, 100);
-      rowC.add(this.maskFileBrowseButton);
-      rowC.addSpacing(10);
-      rowC.add(this.maskClearButton);
-      rowC.addSpacing(10);
-      rowC.add(this.maskReadout);
-
-      return [rowA, rowB, rowC];
+      return [rowEdges, rowFile];
    }
 
    buildListSection() {
@@ -1958,26 +1945,26 @@ var MeteorComposerDialog = class extends Dialog {
          self.selectByCandidateIndex(candidateIndex);
       };
 
-      this.fitButton = new PushButton(this);
+      this.fitButton = new ToolButton(this);
       this.fitButton.text = "Fit";
       this.fitButton.onClick = function () {
          self.preview.fitToWindow();
       };
 
-      this.zoom11Button = new PushButton(this);
+      this.zoom11Button = new ToolButton(this);
       this.zoom11Button.text = "1:1";
       this.zoom11Button.onClick = function () {
          self.preview.zoom11();
          self.preview.centreOn(self.currentCandidateIndex());
       };
 
-      this.zoomInButton = new PushButton(this);
+      this.zoomInButton = new ToolButton(this);
       this.zoomInButton.text = "+";
       this.zoomInButton.onClick = function () {
          self.preview.zoomIn();
       };
 
-      this.zoomOutButton = new PushButton(this);
+      this.zoomOutButton = new ToolButton(this);
       this.zoomOutButton.text = "-";
       this.zoomOutButton.onClick = function () {
          self.preview.zoomOut();
@@ -1991,7 +1978,7 @@ var MeteorComposerDialog = class extends Dialog {
        + "cost about 445 ms of the ~1.2 s each frame takes, and registered "
        + "frames from one session are near-identical, so locking makes "
        + "stepping through the list noticeably quicker.</p>";
-      this.rotateLeftButton = new PushButton(this);
+      this.rotateLeftButton = new ToolButton(this);
       this.rotateLeftButton.text = "↶";
       this.rotateLeftButton.toolTip =
          "<p>Turn the preview a quarter turn anticlockwise. The rotation is a "
@@ -2001,7 +1988,7 @@ var MeteorComposerDialog = class extends Dialog {
          self.setRotation(self.preview.rotation - 90);
       };
 
-      this.rotateRightButton = new PushButton(this);
+      this.rotateRightButton = new ToolButton(this);
       this.rotateRightButton.text = "↷";
       this.rotateRightButton.toolTip =
          "<p>Turn the preview a quarter turn clockwise.</p>";
@@ -2021,18 +2008,28 @@ var MeteorComposerDialog = class extends Dialog {
       this.frameLabel = new Label(this);
       this.frameLabel.text = "";
 
-      // Fixed to the width of their own labels.
+      // ToolButton, not PushButton, and that is the whole fix.
       //
-      // A PushButton asks for a comfortable minimum width, and six of them
-      // asking for it filled the preview pane and pushed "Lock stretch" off the
-      // right-hand edge. These labels are one to three characters; sized to what
-      // they hold, all six fit with room to spare.
+      // These six buttons hold one to three characters each and were taking 102
+      // px apiece, which filled the preview pane and pushed "Lock stretch" off
+      // the edge. Sizing them to their labels was tried and did nothing: a
+      // PushButton on this platform has a minimum width of 102 and
+      // setFixedWidth() cannot go under it - it sets maxWidth and leaves
+      // minWidth alone, so the button comes out at 102 regardless. Measured, in
+      // tests/pjsr/probe_layout.js, along with a ToolButton coming out at
+      // exactly the width it is given.
+      //
+      // They still get an explicit width, because a bare ToolButton sizes to
+      // its text and six differently-sized buttons in a row read as a mess.
       var toolButtons = [this.fitButton, this.zoom11Button, this.zoomInButton,
                          this.zoomOutButton, this.rotateLeftButton,
                          this.rotateRightButton];
+      var toolWidth = 0;
       for (var tb = 0; tb < toolButtons.length; ++tb) {
-         toolButtons[tb].setFixedWidth(
-            Math.max(28, this.font.width(toolButtons[tb].text) + 14));
+         toolWidth = Math.max(toolWidth, this.font.width(toolButtons[tb].text));
+      }
+      for (tb = 0; tb < toolButtons.length; ++tb) {
+         toolButtons[tb].setFixedWidth(toolWidth + 16);
       }
 
       var toolbar = new HorizontalSizer;
@@ -2070,17 +2067,22 @@ var MeteorComposerDialog = class extends Dialog {
       this.detailLabel = new Label(this);
       this.detailLabel.text = "Selected candidate";
 
-      this.detailInButton = new PushButton(this);
+      this.detailInButton = new ToolButton(this);
       this.detailInButton.text = "+";
       this.detailInButton.onClick = function () {
          self.detail.setMargin(self.detail.margin / 1.4);
       };
 
-      this.detailOutButton = new PushButton(this);
+      this.detailOutButton = new ToolButton(this);
       this.detailOutButton.text = "-";
       this.detailOutButton.onClick = function () {
          self.detail.setMargin(self.detail.margin * 1.4);
       };
+
+      var detailWidth = Math.max(this.font.width(this.detailInButton.text),
+                                 this.font.width(this.detailOutButton.text)) + 16;
+      this.detailInButton.setFixedWidth(detailWidth);
+      this.detailOutButton.setFixedWidth(detailWidth);
 
       var toolbar = new HorizontalSizer;
       toolbar.spacing = 4;
@@ -2214,6 +2216,17 @@ var MeteorComposerDialog = class extends Dialog {
          self.exportGroundTruth();
       };
 
+      this.resetButton = new PushButton(this);
+      this.resetButton.text = "Reset";
+      this.resetButton.toolTip =
+         "<p>Put everything back to how the dialog opens: the directories, the "
+       + "mask, the list filters and the sort order.</p>"
+       + "<p>The loaded detection and its verdicts are discarded too. It asks "
+       + "first.</p>";
+      this.resetButton.onClick = function () {
+         self.resetAll();
+      };
+
       this.closeButton = new PushButton(this);
       this.closeButton.text = "Close";
       this.closeButton.onClick = function () {
@@ -2235,10 +2248,94 @@ var MeteorComposerDialog = class extends Dialog {
       this.buttonSizer.add(this.composeButton);
       this.buttonSizer.addSpacing(12);
       this.buttonSizer.add(this.autosaveLabel, 100);
+      this.buttonSizer.add(this.resetButton);
+      this.buttonSizer.addSpacing(12);
       this.buttonSizer.add(this.closeButton);
    }
 
    // --- Detection ----------------------------------------------------------
+
+   // --- Reset --------------------------------------------------------------
+
+   // Everything back to how the dialog opens: the settings, the directories,
+   // and the loaded work.
+   //
+   // This is the full reset PixInsight's own processes offer, and it discards
+   // real work - an eight-minute detection and a night of verdicts - so it
+   // asks first, and says what will go. The verdicts are named separately in
+   // the question when there are any, because "reset" does not sound like
+   // "throw away 116 judgements".
+   resetAll() {
+      var verdicts = this.session === null ? 0 : summarize(this.session).reviewed;
+      var message = "Reset everything?\n\n"
+                  + "The frames and output directories, the mask, the list "
+                  + "filters and the sort order all go back to their defaults.";
+      if (this.detectionResults !== null) {
+         message += "\n\nThe loaded detection will be discarded";
+         if (verdicts > 0) {
+            message += ", including " + verdicts + " verdict"
+                     + (verdicts === 1 ? "" : "s");
+            message += this.dirty
+               ? " - and some of those are not saved yet."
+               : ". They are saved in " + AUTOSAVE_NAME + " and can be loaded "
+                 + "again with the detection results.";
+         } else {
+            message += ".";
+         }
+      }
+      var box = new MessageBox(message, TITLE, StdIcon.Question,
+                               StdButton.Yes, StdButton.No);
+      if (box.execute() !== StdButton.Yes) {
+         return;
+      }
+
+      this.session = null;
+      this.detectionResults = null;
+      this.displayed = [];
+      this.currentRow = -1;
+      this.dirty = false;
+      this.resultsPath = null;
+      this.autosaveError = null;
+      this.cancelRequested = false;
+
+      this.registeredDir = "";
+      this.dirEdit.text = "";
+      this.outputDir = "";
+      this.outputEdit.text = "";
+      this.outputDirChosen = false;
+
+      this.clearMask();
+
+      this.showCombo.currentItem = 0;
+      this.showFilter = this.showFilters[0];
+      if (this.presetCombo.enabled) {
+         this.presetCombo.currentItem = 0;
+         this.scoreCutoff = PRESETS[this.presetNameList[0]].cutoff;
+      }
+      this.hidePersistentCheck.checked = false;
+
+      this.sortKey = defaultSortKey(this.mode);
+      this.sortAscending = (this.sortKey !== "score");
+      var startIndex = this.sortKeys.indexOf(this.sortKey);
+      this.sortCombo.currentItem = startIndex >= 0 ? startIndex : 0;
+
+      this.candidateTree.clear();
+      this.cache.clear();
+      this.preview.setCandidates([], [], [], -1);
+      this.preview.setFrame(null);
+      this.preview.setRotation(0);
+      this.detail.setSource(null, null);
+
+      this.progressLabel.text = "No detection results loaded.";
+      this.frameLabel.text = "";
+      this.summaryLabel.text = "";
+      this.autosaveLabel.text = "";
+
+      // So that closing the dialog does not write the cleared-away directories
+      // back over the stored ones only to have them restored next time.
+      this.updateEnabled();
+      console.noteln("<end><cbr>MeteorComposer: reset");
+   }
 
    // --- Exclusion mask -----------------------------------------------------
 
@@ -2246,8 +2343,8 @@ var MeteorComposerDialog = class extends Dialog {
       var edges = (this.maskMode === "edges");
       for (var i = 0; i < MASK_EDGES.length; ++i) {
          var cell = this.maskEdgeControls[MASK_EDGES[i]];
-         cell.percent.enabled = edges;
-         cell.angle.enabled = edges;
+         cell.start.enabled = edges;
+         cell.end.enabled = edges;
       }
       this.maskFileEdit.enabled = !edges;
       this.maskFileBrowseButton.enabled = !edges;
@@ -2258,8 +2355,8 @@ var MeteorComposerDialog = class extends Dialog {
       this.maskEdges = makeEdgeSpec();
       for (var i = 0; i < MASK_EDGES.length; ++i) {
          var cell = this.maskEdgeControls[MASK_EDGES[i]];
-         cell.percent.setValue(0);
-         cell.angle.setValue(0);
+         cell.start.value = 0;
+         cell.end.value = 0;
       }
       this.maskFilePath = "";
       this.maskFileLum = null;
@@ -2354,8 +2451,7 @@ var MeteorComposerDialog = class extends Dialog {
          return;
       }
       var fraction = maskExcludedFraction(mask);
-      this.maskReadout.text = "Excluded: " + (fraction * 100).toFixed(1)
-                            + "% of the frame";
+      this.maskReadout.text = "Excluded: " + (fraction * 100).toFixed(1) + "%";
       this.preview.setMask(haveFrame ? maskOverlayBitmap(mask, fw, fh) : null);
    }
 
@@ -2369,7 +2465,7 @@ var MeteorComposerDialog = class extends Dialog {
       var edges = {};
       for (var i = 0; i < MASK_EDGES.length; ++i) {
          var e = this.maskEdges[MASK_EDGES[i]];
-         edges[MASK_EDGES[i]] = { percent: e.percent, angle: e.angle };
+         edges[MASK_EDGES[i]] = { start: e.start, end: e.end };
       }
       return { mode: "edges", edges: edges };
    }
@@ -2405,12 +2501,12 @@ var MeteorComposerDialog = class extends Dialog {
          var edge = MASK_EDGES[i];
          var from = (spec.edges && spec.edges[edge]) ? spec.edges[edge] : null;
          if (from !== null) {
-            this.maskEdges[edge].percent = clampPercent(from.percent);
-            this.maskEdges[edge].angle = Number(from.angle) || 0;
+            this.maskEdges[edge].start = Math.round(clampPercent(from.start));
+            this.maskEdges[edge].end = Math.round(clampPercent(from.end));
          }
          var cell = this.maskEdgeControls[edge];
-         cell.percent.setValue(this.maskEdges[edge].percent);
-         cell.angle.setValue(this.maskEdges[edge].angle);
+         cell.start.value = this.maskEdges[edge].start;
+         cell.end.value = this.maskEdges[edge].end;
       }
       this.maskSourceChanged();
    }

@@ -192,27 +192,30 @@ function excludedFraction(region, width, height) {
 
 // --- Edge bands (the form the UI collects) ---------------------------------
 
-// The dialog does not ask for half-planes. It asks, per edge, "how far in from
-// this edge is excluded, and how much is that boundary tilted" - which is how
-// a landscape intrusion is actually described: the ground covers the bottom
-// tenth and slopes a few degrees.
+// The dialog does not ask for half-planes, and it does not ask for an angle
+// either. It asks, per edge, how far in the excluded band reaches AT EACH END
+// of that edge:
 //
-//   percent   how far in from the edge, as a percentage of the frame height
-//             (top, bottom) or width (left, right). 0 excludes nothing.
-//   angle     degrees of tilt. Positive rotates the boundary CLOCKWISE on
-//             screen, which is the direction of increasing `angle` in the
-//             (x right, y down) frame the images live in.
+//   top, bottom     the left end first, then the right end
+//   left, right     the top end first, then the bottom end
 //
-// The tilt pivots at the MIDPOINT of the edge, so the excluded area does not
-// change while the boundary stays inside the frame. That lets the operator set
-// the depth first and then the slope without the depth drifting underneath
-// them. Pivoting at a corner instead would swing the far end wildly.
+// as a percentage of the frame's height (top, bottom) or width (left, right).
+//
+// Why two depths rather than a depth and a tilt. Both describe the same family
+// of lines, but a tilt is signed, and PJSR's SpinBox cannot hold a negative
+// number - assigning one leaves it at zero, silently, whether by the property
+// or by setRange() (measured; tests/pjsr/probe_layout.js). Depths are never
+// negative, so every number in the row can be a spin box the operator steps
+// with the keyboard, and there is no sign convention or pivot to explain: each
+// number is how much is covered, right there.
+//
+// The cost is that a level band needs the same number entered twice.
 var MASK_EDGES = ["top", "bottom", "left", "right"];
 
 function makeEdgeSpec() {
    var spec = {};
    for (var i = 0; i < MASK_EDGES.length; ++i) {
-      spec[MASK_EDGES[i]] = { percent: 0, angle: 0 };
+      spec[MASK_EDGES[i]] = { start: 0, end: 0 };
    }
    return spec;
 }
@@ -231,7 +234,7 @@ function edgeSpecIsEmpty(spec) {
       if (!e) {
          continue;
       }
-      if (clampPercent(e.percent) !== 0 || (Number(e.angle) || 0) !== 0) {
+      if (clampPercent(e.start) !== 0 || clampPercent(e.end) !== 0) {
          return false;
       }
    }
@@ -240,44 +243,66 @@ function edgeSpecIsEmpty(spec) {
 
 // One edge -> one half-plane, or null when the edge excludes nothing.
 //
-// Zero percent with a non-zero angle is NOT a no-op: the tilted boundary still
-// crosses a corner and cuts a triangle off it. Only both-zero is.
-function edgeHalfPlane(edge, percent, angle, width, height) {
-   var p = clampPercent(percent);
-   var a = Number(angle) || 0;
-   if (p === 0 && a === 0) {
+// The boundary passes through the two depths, so the excluded band is the
+// trapezoid between it and the edge. Its area is therefore the MEAN of the two
+// percentages - which is what the readout will show, and what makes the numbers
+// predictable: 8 and 14 excludes 11% of the frame.
+function edgeHalfPlane(edge, startPercent, endPercent, width, height) {
+   var a = clampPercent(startPercent);
+   var b = clampPercent(endPercent);
+   if (a === 0 && b === 0) {
       return null;
    }
-   var cx = (width - 1) / 2;
-   var cy = (height - 1) / 2;
-   var px, py, base, keep, depth;
+   var x0, y0, x1, y1, keep, da, db;
    switch (edge) {
    case "top":
-      depth = p / 100 * height;
-      px = cx; py = depth; base = 0; keep = 1;
+      da = a / 100 * height;
+      db = b / 100 * height;
+      x0 = 0; y0 = da; x1 = width - 1; y1 = db;
+      keep = 1;                     // keep what is below the boundary
       break;
    case "bottom":
-      depth = p / 100 * height;
-      px = cx; py = (height - 1) - depth; base = 0; keep = -1;
+      da = a / 100 * height;
+      db = b / 100 * height;
+      x0 = 0; y0 = (height - 1) - da; x1 = width - 1; y1 = (height - 1) - db;
+      keep = -1;                    // keep what is above it
       break;
    case "left":
-      depth = p / 100 * width;
-      px = depth; py = cy; base = 90; keep = -1;
+      da = a / 100 * width;
+      db = b / 100 * width;
+      x0 = da; y0 = 0; x1 = db; y1 = height - 1;
+      keep = -1;                    // keep what is to its right
       break;
    case "right":
-      depth = p / 100 * width;
-      px = (width - 1) - depth; py = cy; base = 90; keep = 1;
+      da = a / 100 * width;
+      db = b / 100 * width;
+      x0 = (width - 1) - da; y0 = 0; x1 = (width - 1) - db; y1 = height - 1;
+      keep = 1;                     // keep what is to its left
       break;
    default:
       return null;
    }
-   var lineAngle = base + a;
-   var rad = lineAngle * Math.PI / 180;
+   return halfPlaneThrough(x0, y0, x1, y1, keep, width, height);
+}
+
+// The half-plane whose boundary passes through two points.
+//
+// `keep` is fixed per edge rather than derived from a probe point, because at
+// 100% there is no kept sample left to probe: the sign has to come from the
+// geometry. For a top or bottom band the boundary always runs left to right, so
+// its normal (-sin, cos) always points down the frame; for a left or right band
+// it always runs top to bottom, so the normal always points to -x. Those are
+// the two facts the constants above rest on.
+function halfPlaneThrough(x0, y0, x1, y1, keep, width, height) {
+   var angle = Math.atan2(y1 - y0, x1 - x0) * 180 / Math.PI;
+   var rad = angle * Math.PI / 180;
    var nx = -Math.sin(rad);
    var ny = Math.cos(rad);
-   // The line passes through the pivot, so the pivot's signed distance is zero.
-   var offset = (px - cx) * nx + (py - cy) * ny;
-   return makeHalfPlane(lineAngle, offset, keep);
+   var cx = (width - 1) / 2;
+   var cy = (height - 1) / 2;
+   // A point on the boundary has signed distance zero, which fixes the offset.
+   var offset = (x0 - cx) * nx + (y0 - cy) * ny;
+   return makeHalfPlane(angle, offset, keep);
 }
 
 // The four edges combined with "and": a sample survives only if every edge
@@ -292,7 +317,7 @@ function edgeSpecToRegion(spec, width, height) {
       if (!e) {
          continue;
       }
-      var hp = edgeHalfPlane(edge, e.percent, e.angle, width, height);
+      var hp = edgeHalfPlane(edge, e.start, e.end, width, height);
       if (hp) {
          planes.push(hp);
       }
@@ -303,8 +328,8 @@ function edgeSpecToRegion(spec, width, height) {
 // The two endpoints where an edge's boundary line meets the frame border, for
 // drawing it on the preview. Returns null when the line misses the frame
 // entirely (which happens at 0% with a tilt, on the half that runs off).
-function edgeBoundarySegment(edge, percent, angle, width, height) {
-   var hp = edgeHalfPlane(edge, percent, angle, width, height);
+function edgeBoundarySegment(edge, startPercent, endPercent, width, height) {
+   var hp = edgeHalfPlane(edge, startPercent, endPercent, width, height);
    if (!hp) {
       return null;
    }
@@ -520,6 +545,7 @@ if (typeof module !== "undefined") {
       clampPercent: clampPercent,
       edgeSpecIsEmpty: edgeSpecIsEmpty,
       edgeHalfPlane: edgeHalfPlane,
+      halfPlaneThrough: halfPlaneThrough,
       edgeSpecToRegion: edgeSpecToRegion,
       edgeBoundarySegment: edgeBoundarySegment,
       halfPlaneSegment: halfPlaneSegment,
