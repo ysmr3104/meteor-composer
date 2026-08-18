@@ -41,10 +41,10 @@ function directoryOf(path) {
 
 // Where to write, guessed from where the frames are.
 //
-// WBPP lays out <root>/registered/<group>/*.xisf, so the group's parent is
-// `registered` and the root is one level above that. Writing into either the
-// group or `registered` would put generated files among the calibrated frames,
-// so the root is the answer when the layout is recognised.
+// WBPP lays the frames out under <root>/registered/<group>, so the group's
+// parent is `registered` and the root is one level above that. Writing into
+// either the group or `registered` would put generated files among the
+// calibrated frames, so the root is the answer when the layout is recognised.
 //
 // A guess, and a visible one: it lands in a field the operator can read and
 // change, which is the difference between a wrong default and a wrong path
