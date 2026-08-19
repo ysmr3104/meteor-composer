@@ -2097,6 +2097,18 @@ var MeteorComposerDialog = class extends Dialog {
          toolButtons[tb].setFixedWidth(toolWidth + 16);
       }
 
+      // A CheckBox has a minWidth of zero, so a crowded row squeezes it until
+      // its own label is cut - measured at 57 px for a control that wants 85,
+      // which is where the "h" of "Lock stretch" went. Giving it a floor keeps
+      // it whole and lets the frame name, which is next to it and elastic,
+      // take the squeeze instead.
+      //
+      // A floor rather than a fixed width: 19 px of tick box and spacing is
+      // what this font and style come to, and a floor still lets the control
+      // have more if a different style wants more.
+      this.lockSTFCheck.minWidth =
+         this.font.width(this.lockSTFCheck.text) + 20;
+
       var toolbar = new HorizontalSizer;
       toolbar.spacing = 4;
       toolbar.add(this.fitButton);

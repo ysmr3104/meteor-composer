@@ -33,6 +33,10 @@
 
 #include "../../javascript/paths.js"
 #include "../../javascript/detection_core.js"
+// detection_core.js merges collinear fragments through candidate_ops.js. Under
+// PJSR that has to be included here: the fallback it would otherwise take is
+// `require`, which does not exist.
+#include "../../javascript/candidate_ops.js"
 
 var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test";
 var GROUP = "Light_BIN-1_6024x4024_EXPOSURE-13.00s_FILTER-NoFilter_RGB";

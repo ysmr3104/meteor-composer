@@ -526,6 +526,109 @@ suite("V8 constant style", function () {
 
 //----------------------------------------------------------------------------
 
+//----------------------------------------------------------------------------
+// Lazy sibling dependencies
+//
+// A pure module cannot `require` a sibling unconditionally: under PJSR there is
+// no `require`. The pattern used here (composition.js -> trail_mask.js,
+// detection_core.js -> candidate_ops.js) tests for the function first and falls
+// back to `require` only under Node:
+//
+//    (typeof mergeCollinear === "function")
+//       ? { mergeCollinear: mergeCollinear }
+//       : require("./candidate_ops.js")
+//
+// Under PJSR that reaches the `require` branch whenever the sibling was NOT
+// #included alongside it - and `require` is not defined there, so the script
+// dies with a ReferenceError reported only in the Process Console. From the
+// outside it looks like the script ran and did nothing.
+//
+// This is not hypothetical: detection_core.js gained such a dependency and
+// three PJSR scripts that include it - run_detection.js among them, the one
+// that produces the evaluation data - did not include candidate_ops.js.
+//----------------------------------------------------------------------------
+
+// Modules a file falls back to `require`ing, by module name.
+function lazyDependencies(source) {
+   var deps = [];
+   var re = /require\(\s*"\.\/([A-Za-z0-9_]+\.js)"\s*\)/g;
+   var m;
+   while ((m = re.exec(source)) !== null) {
+      if (deps.indexOf(m[1]) < 0) {
+         deps.push(m[1]);
+      }
+   }
+   return deps;
+}
+
+// The module files a PJSR script pulls in, by base name.
+function includedModules(source) {
+   var names = [];
+   var re = /^\s*#include\s+"([^"]+)"/gm;
+   var m;
+   while ((m = re.exec(source)) !== null) {
+      var base = m[1].split("/").pop();
+      if (names.indexOf(base) < 0) {
+         names.push(base);
+      }
+   }
+   return names;
+}
+
+suite("a lazily required sibling is included wherever its module is", function () {
+   var lazyBy = {};
+   var i;
+   for (i = 0; i < MODULES.length; ++i) {
+      var deps = lazyDependencies(fs.readFileSync(path.join(JS_DIR, MODULES[i]), "utf8"));
+      if (deps.length > 0) {
+         lazyBy[MODULES[i]] = deps;
+      }
+   }
+   // Not an assertion about how many there are - just that the scan works at
+   // all. If this ever reads zero the rest of the suite is checking nothing.
+   var lazyNames = Object.keys(lazyBy);
+   ok(lazyNames.length > 0,
+      "at least one module has a lazy sibling dependency to check");
+
+   var scripts = [];
+   var pjsrDir = path.join(__dirname, "..", "pjsr");
+   if (fs.existsSync(pjsrDir)) {
+      var entries = fs.readdirSync(pjsrDir);
+      for (i = 0; i < entries.length; ++i) {
+         if (/\.js$/.test(entries[i])) {
+            scripts.push(path.join(pjsrDir, entries[i]));
+         }
+      }
+   }
+   scripts.push(MAIN);
+   ok(scripts.length > 1, "there are PJSR scripts to check");
+
+   var missing = [];
+   for (i = 0; i < scripts.length; ++i) {
+      if (!fs.existsSync(scripts[i])) {
+         continue;
+      }
+      var source = fs.readFileSync(scripts[i], "utf8");
+      var included = includedModules(source);
+      for (var j = 0; j < lazyNames.length; ++j) {
+         if (included.indexOf(lazyNames[j]) < 0) {
+            continue;
+         }
+         var needs = lazyBy[lazyNames[j]];
+         for (var k = 0; k < needs.length; ++k) {
+            if (included.indexOf(needs[k]) < 0) {
+               missing.push(path.basename(scripts[i]) + " includes "
+                            + lazyNames[j] + " but not " + needs[k]);
+            }
+         }
+      }
+   }
+   ok(missing.length === 0,
+      "every lazily required sibling is also included"
+      + (missing.length > 0 ? ":\n        " + missing.join("\n        ") : ""));
+});
+
+
 console.log("\n============================================");
 console.log("passed: " + passed + "  failed: " + failed);
 if (failed > 0) {

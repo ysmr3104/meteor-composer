@@ -633,14 +633,53 @@ function detectCandidates(field, options, mask) {
          bbox: computeBoundingBox(pixels)
       });
    }
+   // One trail can arrive as several components. Thresholding is per-sample,
+   // so a trail that dips below the threshold anywhere - a faint stretch, a
+   // masked star sitting on it - comes back in pieces.
+   //
+   // This is not cosmetic. Measured on the 2026-08-12 session, three aircraft
+   // survived the strict list because of it: the object was tracked correctly
+   // across five to eleven frames and scored down, while a two-sample-long
+   // break left a second fragment in the same frame that joined no track and
+   // kept full marks. The operator saw an obvious aircraft at the top of the
+   // list with nothing said against it.
+   //
+   // Merging here rather than at the point of use, so that the results file
+   // and every reader of it - the UI, evaluate.js, the composite - see the
+   // same candidates. Merging at load time would let the file and the screen
+   // disagree about what was found.
+   var merged = mergeCollinearFragments(candidates);
+
    return {
-      candidates: candidates,
+      candidates: merged,
       level: th.level,
       sigma: th.stats.sigma,
       median: th.stats.median,
       componentCount: cc.components.length,
-      noDataSamples: noData.emptyCount
+      noDataSamples: noData.emptyCount,
+      fragmentsMerged: candidates.length - merged.length
    };
+}
+
+// candidate_ops.js is a sibling module. Under PJSR the #include concatenation
+// puts its functions in the same global scope; under Node it has to be
+// required. Same shape as composition.js's trailMaskFunctions().
+var _candidateOpsModule = null;
+
+function candidateOpsFunctions() {
+   if (_candidateOpsModule === null) {
+      _candidateOpsModule = (typeof mergeCollinear === "function")
+         ? { mergeCollinear: mergeCollinear }
+         : require("./candidate_ops.js");
+   }
+   return _candidateOpsModule;
+}
+
+function mergeCollinearFragments(candidates) {
+   if (candidates.length < 2) {
+      return candidates;
+   }
+   return candidateOpsFunctions().mergeCollinear(candidates, null);
 }
 
 // --- Exports ---------------------------------------------------------------
@@ -661,6 +700,7 @@ if (typeof module !== "undefined") {
       computeEndpoints: computeEndpoints,
       computeBoundingBox: computeBoundingBox,
       detectCandidates: detectCandidates,
+      mergeCollinearFragments: mergeCollinearFragments,
       DEFAULT_OPTIONS: DEFAULT_OPTIONS
    };
 }
