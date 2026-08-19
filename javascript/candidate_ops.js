@@ -372,8 +372,38 @@ var DEFAULT_MATCH_OPTIONS = {
    // The result did not move across perpendicular tolerances from 4 to 20
    // samples or gaps from 150 to 400, so the criterion is doing the work and
    // not the threshold. These are the conservative end of that range.
-   maxContinuationPerp: 6.0,
-   maxContinuationGap: 150.0
+   maxContinuationPerp: 10.0,
+   maxContinuationGap: 150.0,
+
+   // How many frames a continuation may bridge. Deliberately larger than
+   // maxFrameGap, which governs the proximity rule.
+   //
+   // The two rules do not deserve the same reach. Proximity over four frames
+   // is a disc 400 samples across and will link almost anything; a
+   // continuation over four frames still has to lie on the earlier trail's
+   // line, which is a far harder thing to satisfy by accident.
+   //
+   // What forced the distinction: an aircraft with a flashing anti-collision
+   // light. Its trail is a row of dashes, so it is detected only when enough
+   // of them run together - present in DSC05337, absent in 5338 to 5340,
+   // present again from 5341. Two frames could not bridge that, and the
+   // isolated frame came back with a perfect score at the top of the strict
+   // list.
+   //
+   // Measured on the 2026-08-12 session, against the ground truth:
+   //
+   //   proximity  continuation   strict list   labelled meteors suppressed
+   //           2             2            73                            0
+   //           2             4            62                            0
+   //           2             5            62                            0
+   //           2             6            59                            2
+   //           4             4            57                            1
+   //
+   // Raising BOTH to four costs a labelled meteor; raising only the
+   // continuation does not, which is the whole argument for separating them.
+   // Four and five behave identically, so four sits two steps clear of where
+   // meteors start being swept up.
+   maxContinuationFrameGap: 4
 };
 
 // Link candidates that appear in consecutive frames.
@@ -453,7 +483,9 @@ function matchAcrossFrames(frames, options) {
             var track = tracks[k];
             var last = track.members[track.members.length - 1];
             var frameGap = i - last.frameIndex;
-            if (frameGap <= 0 || frameGap > opt.maxFrameGap) {
+            // The wider of the two rules' reaches; each then applies its own.
+            var maxGap = Math.max(opt.maxFrameGap, opt.maxContinuationFrameGap);
+            if (frameGap <= 0 || frameGap > maxGap) {
                continue;
             }
             if (angleDifference(cand.angle, last.candidate.angle) > opt.maxAngleDiff) {
@@ -462,8 +494,11 @@ function matchAcrossFrames(frames, options) {
             var dx = cand.cx - last.candidate.cx;
             var dy = cand.cy - last.candidate.cy;
             var shift = Math.sqrt(dx * dx + dy * dy);
-            if (shift > opt.maxCentroidShift * frameGap
-                && !continuesTrail(last.candidate, cand, frameGap, opt)) {
+            var near = frameGap <= opt.maxFrameGap
+                    && shift <= opt.maxCentroidShift * frameGap;
+            if (!near
+                && !(frameGap <= opt.maxContinuationFrameGap
+                     && continuesTrail(last.candidate, cand, frameGap, opt))) {
                continue;
             }
             if (shift < bestScore) {
