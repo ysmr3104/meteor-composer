@@ -6,7 +6,7 @@
    </description>
    <platform os="all" arch="noarch" version="1.9.4:9.9.9">
       <package fileName="MeteorComposer-1.0.0.zip"
-               sha1="6c7c312af5988f899c1123fd4e6fba778b8afc59"
+               sha1="c2a341582ecae0eb80ada347b883424f401dbb63"
                type="script"
                releaseDate="20260819">
          <title>MeteorComposer</title>
