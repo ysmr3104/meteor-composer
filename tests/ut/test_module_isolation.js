@@ -55,6 +55,7 @@ var MODULES = [
    "paths.js",
    "detection_core.js",
    "candidate_ops.js",
+   "trail_colour.js",
    "mask_geometry.js",
    "preview_geometry.js",
    "session_model.js",

@@ -25,6 +25,7 @@
 #include "paths.js"
 #include "detection_core.js"
 #include "candidate_ops.js"
+#include "trail_colour.js"
 #include "mask_geometry.js"
 #include "classifier.js"
 #include "trail_mask.js"
@@ -102,19 +103,59 @@ function listFrames(dir) {
 // Image file -> plain field. This is the boundary described in
 // docs/tests.md 2: everything past it is pure JavaScript.
 function loadField(path, factor) {
+   return withFrame(path, factor, function (field) { return field; });
+}
+
+// Open a frame, hand its reduced luminance field AND its full-resolution image
+// to `fn`, and close it afterwards whatever happens.
+//
+// Detection needs the field; the colour measurement needs the image. Opening
+// the file costs about 800 ms of the ~1.2 s a frame takes, so reading it twice
+// would add most of ten minutes to a session. One open, both jobs, and the
+// window's lifetime stays visible in one place.
+function withFrame(path, factor, fn) {
    var windows = ImageWindow.open(path);
    if (!windows || windows.length === 0) {
       return null;
    }
    var win = windows[0];
    try {
+      var image = win.mainView.image;
       var Y = new Image();
-      win.mainView.image.getLuminance(Y);
+      image.getLuminance(Y);
       Y.resample(1.0 / factor);
       var m = Y.toMatrix();
-      return { data: m.toArray(), width: Y.width, height: Y.height };
+      var field = { data: m.toArray(), width: Y.width, height: Y.height };
+      return fn(field, image);
    } finally {
       win.forceClose();
+   }
+}
+
+// Attach each candidate's colour, in place.
+//
+// Green fraction separates meteors from everything else better than any other
+// feature measured (docs/requirements.md 6.1.0) and the classifier has carried
+// the term since. Nothing supplied the value until now, so it did nothing.
+//
+// A candidate whose colour cannot be read keeps `colour` unset, and the
+// classifier then scores it without the term rather than with a guess - which
+// is the behaviour that protects a meteor the measurement failed on.
+function attachColours(image, candidates, factor) {
+   var sampler = function (x, y, channel) {
+      return image.sample(x, y, channel);
+   };
+   for (var i = 0; i < candidates.length; ++i) {
+      var colour = null;
+      try {
+         colour = measureTrailColour(sampler, candidates[i], factor, factor,
+                                     image.width, image.height, null);
+      } catch (e) {
+         colour = null;
+      }
+      if (colour !== null) {
+         candidates[i].colour = colour;
+      }
    }
 }
 
@@ -2755,16 +2796,23 @@ var MeteorComposerDialog = class extends Dialog {
          var name = frames[i];
          var record = { file: name, candidates: [] };
          try {
-            var field = loadField(this.registeredDir + "/" + name, SCREEN_FACTOR);
-            if (field !== null) {
-               // Built from this frame's own field size. The mask has to be
-               // exactly the field's length, and a percentage describes the
-               // same mask at any size, so nothing is carried between frames.
-               var mask = this.maskForField(field.width, field.height);
-               if (i === 0) {
-                  this.reportMaskCost(field, mask);
-               }
-               var r = detectCandidates(field, options, mask);
+            var self = this;
+            var found = withFrame(this.registeredDir + "/" + name, SCREEN_FACTOR,
+               function (field, image) {
+                  // Built from this frame's own field size. The mask has to be
+                  // exactly the field's length, and a percentage describes the
+                  // same mask at any size, so nothing is carried between frames.
+                  var mask = self.maskForField(field.width, field.height);
+                  if (i === 0) {
+                     self.reportMaskCost(field, mask);
+                  }
+                  var result = detectCandidates(field, options, mask);
+                  attachColours(image, result.candidates, SCREEN_FACTOR);
+                  return { field: field, result: result };
+               });
+            if (found !== null) {
+               var field = found.field;
+               var r = found.result;
                record.width = field.width;
                record.height = field.height;
                record.candidates = r.candidates;
