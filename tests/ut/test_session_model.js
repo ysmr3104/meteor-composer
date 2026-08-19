@@ -437,6 +437,69 @@ suite("ground truth export", function () {
 
 //----------------------------------------------------------------------------
 
+//----------------------------------------------------------------------------
+// Following the selection across a rebuild
+//
+// The displayed list is filtered and sorted, so a position in it survives
+// nothing. This is what the screening UI uses to keep the operator on the same
+// candidate when they change the filter - and what stops it reading past the
+// end of a list that just got shorter.
+//----------------------------------------------------------------------------
+
+suite("indexOfRowId", function () {
+   var displayed = [
+      { id: 7, file: "a" },
+      { id: 3, file: "b" },
+      { id: 11, file: "c" }
+   ];
+   ok(model.indexOfRowId(displayed, 7) === 0, "the first row");
+   ok(model.indexOfRowId(displayed, 3) === 1, "the second");
+   ok(model.indexOfRowId(displayed, 11) === 2, "the third");
+   ok(model.indexOfRowId(displayed, 99) === -1, "a row that is not displayed");
+   ok(model.indexOfRowId(displayed, null) === -1, "no id at all");
+   ok(model.indexOfRowId(displayed, undefined) === -1, "an undefined id");
+   ok(model.indexOfRowId([], 7) === -1, "an empty list");
+});
+
+suite("indexOfRowId: id 0 is a real id", function () {
+   // buildRows numbers from zero, so the first candidate of the session has id
+   // 0. A truthiness check instead of an explicit comparison would lose it.
+   var displayed = [{ id: 0, file: "a" }, { id: 1, file: "b" }];
+   ok(model.indexOfRowId(displayed, 0) === 0, "the first candidate is findable");
+});
+
+suite("indexOfRowId: following a candidate through a filter", function () {
+   // The shape of the bug this exists to prevent: the list is filtered shorter,
+   // and the row that was selected is either somewhere else or gone.
+   var s = model.createSession(results([
+      frame("f1.xisf", [cand(0, 0, 10, 0), cand(20, 20, 30, 20)]),
+      frame("f2.xisf", [cand(40, 40, 50, 40)]),
+      frame("f3.xisf", [cand(60, 60, 70, 60), cand(80, 80, 90, 80)])
+   ]));
+   ok(s.rows.length === 5, "five candidates");
+
+   var all = model.filterRows(s, {});
+   model.setVerdict(s, all[3].id, model.VERDICT.METEOR);
+   var meteors = model.filterRows(s, { verdicts: [model.VERDICT.METEOR] });
+   ok(all.length === 5 && meteors.length === 1,
+      "the filter shortens the list to one row");
+
+   // Row 3 was selected; where is it now?
+   ok(model.indexOfRowId(meteors, all[3].id) === 0,
+      "the selected candidate is found at its new position");
+
+   // A row the filter hides is reported as gone, not as position 0.
+   ok(model.indexOfRowId(meteors, all[0].id) === -1,
+      "a candidate the filter removed is not found");
+
+   // The index that used to be valid is now past the end. This is the read
+   // that threw: displayed[3] of a one-row list, then .file on undefined.
+   ok(meteors[3] === undefined,
+      "the old index is past the end of the new list, which is why a stale "
+      + "index must never be read");
+});
+
+
 console.log("\n============================================");
 console.log("passed: " + passed + "  failed: " + failed);
 if (failed > 0) {

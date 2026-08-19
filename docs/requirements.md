@@ -1319,6 +1319,52 @@ Screening モードで 411 候補・31 本採用のデータを通し、UI の�
 - 出力形式・出力先は設定可能とする
 - **Stage 4 が成立しない場合の逃げ道**として、Stage 3 の「マスク＋該当サブフレームの出力」で処理を止め、合成をユーザーに委ねる運用を許容する
 
+### 7.1.12 選択行は再構築を跨いで意味を持たない（2026-08-19）
+
+操作者の報告: **`Show` を触ったところから動きがおかしくなり、コンソールにエラーが出る。**
+
+```
+*** Error: MeteorComposer.js:3121: TypeError: Cannot read properties of undefined (reading 'file')
+   || this.displayed[this.currentRow].file !== this.displayed[index].file;
+   at Dialog.selectDisplayed
+   at candidateTree.onCurrentNodeUpdated
+```
+
+`refreshList()` の末尾が原因だった。
+
+```js
+var target = this.currentRow;
+if (target < 0 || target >= this.displayed.length) {
+   target = 0;          // target は直すが currentRow は古いまま
+}
+this.selectDisplayed(target, true);
+```
+
+`selectDisplayed` は `this.displayed[this.currentRow]` を読むので、**フィルタでリストが選択行より短くなると範囲外を読んで落ちる。** 一度落ちると以降の操作すべてで落ち続ける。
+
+#### 位置ではなく候補を追う
+
+そもそも**表示リストの位置は再構築を跨いで意味を持たない。** 411 件中の 40 行目と 92 件中の 40 行目は別の候補であり、存在しないこともある。行が持つ `id` は残るので、それで追う。
+
+`session_model.js` に `indexOfRowId(displayed, id)` を足した（純粋関数なので Small テストで押さえられる）。フィルタが選択候補を隠した場合は -1 を返し、UI は先頭に戻る。**副産物として、フィルタを変えても同じ候補を見続けられるようになった**（従来は古い位置に居座る別の候補に飛んでいた）。
+
+#### 不変条件はアクセサで守る
+
+`this.displayed[this.currentRow]` を読む箇所が 6 つあり、**そのうち 4 つは `currentRow < 0` しか見ていなかった** — 問題だったことのない側の境界だけを守っていた。個々に上限を足すのではなく、読み出しを 1 か所に閉じた。
+
+```js
+currentDisplayedRow() {
+   if (this.currentRow < 0 || this.currentRow >= this.displayed.length) {
+      return null;
+   }
+   return this.displayed[this.currentRow];
+}
+```
+
+**`tests/ut/test_module_isolation.js` が直接読みを禁止する静的検査を持つ。** アクセサ自身の 1 行だけを例外とし、それ以外の `this.displayed[this.currentRow]` があれば行番号付きで失敗する。意図的に戻して落ちることを確認済み。
+
+これは**実行時の不変条件を静的に守れる形に変換した**例である。`MeteorComposer.js` は構文解析しかできない（PJSR のオブジェクトモデル全部が必要になる）ので、「読み方の規約」に落とせるものは落とすほうが検査が効く。
+
 ### 7.3 Stage 4 — コンポジット生成
 
 #### 用語：Integration ではなく Composition

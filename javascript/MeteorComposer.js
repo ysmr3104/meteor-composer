@@ -3000,6 +3000,12 @@ var MeteorComposerDialog = class extends Dialog {
          hidePersistent: this.hidePersistentCheck.checked,
          verdicts: this.showFilter
       };
+      // Which candidate is selected, by identity rather than by position. A
+      // position in the displayed list means nothing across a rebuild: row 40
+      // of 411 is a different candidate from row 40 of 92, and may not exist.
+      var selectedRow = this.currentDisplayedRow();
+      var selectedId = selectedRow === null ? null : selectedRow.id;
+
       var rows = filterRows(this.session, filter);
       if (this.scoreCutoff > 0 && modeShowsScores(this.mode)) {
          var kept = [];
@@ -3036,14 +3042,19 @@ var MeteorComposerDialog = class extends Dialog {
          node.setText(col, this.verdictText(row.verdict));
       }
 
+      // The old index is meaningless now, and leaving it in place is what put
+      // an out-of-range index into selectDisplayed() and threw: filtering the
+      // list shorter than the selected row read past the end of it. Cleared
+      // here rather than guarded there, so that `currentRow` keeps its
+      // invariant - inside `displayed`, or -1 - for every reader.
+      this.currentRow = -1;
+
       if (this.displayed.length > 0) {
-         var target = this.currentRow;
-         if (target < 0 || target >= this.displayed.length) {
-            target = 0;
-         }
-         this.selectDisplayed(target, true);
+         // Follow the candidate that was selected. If the filter hid it, start
+         // at the top rather than at whatever now occupies its old position.
+         var target = indexOfRowId(this.displayed, selectedId);
+         this.selectDisplayed(target >= 0 ? target : 0, true);
       } else {
-         this.currentRow = -1;
          this.preview.setCandidates([], [], [], -1);
       }
       this.updateSummary();
@@ -3090,20 +3101,37 @@ var MeteorComposerDialog = class extends Dialog {
       return "-";
    }
 
+   // The selected row, or null when there is not one.
+   //
+   // The only way to read it. `currentRow` is an index into `displayed`, and
+   // `displayed` is rebuilt whenever the filter or the sort changes, so an
+   // index held across a rebuild can point past the end - which is what threw
+   // the first time an operator narrowed the list below the selected row.
+   //
+   // refreshList() keeps `currentRow` inside the list or at -1, so in practice
+   // this returns null only when nothing is selected. It checks anyway: the
+   // invariant is worth one comparison, and a direct read is worth none.
+   // tests/ut/test_module_isolation.js forbids the direct read.
+   currentDisplayedRow() {
+      if (this.currentRow < 0 || this.currentRow >= this.displayed.length) {
+         return null;
+      }
+      return this.displayed[this.currentRow];
+   }
+
    // The candidate's position within the frame's candidate array, which is
    // what the preview draws.
    currentCandidateIndex() {
-      if (this.currentRow < 0 || this.currentRow >= this.displayed.length) {
-         return -1;
-      }
-      return this.displayed[this.currentRow].indexInFrame;
+      var row = this.currentDisplayedRow();
+      return row === null ? -1 : row.indexInFrame;
    }
 
    selectByCandidateIndex(candidateIndex) {
-      if (this.currentRow < 0) {
+      var current = this.currentDisplayedRow();
+      if (current === null) {
          return;
       }
-      var file = this.displayed[this.currentRow].file;
+      var file = current.file;
       for (var i = 0; i < this.displayed.length; ++i) {
          if (this.displayed[i].file === file
              && this.displayed[i].indexInFrame === candidateIndex) {
@@ -3117,8 +3145,13 @@ var MeteorComposerDialog = class extends Dialog {
       if (index < 0 || index >= this.displayed.length) {
          return;
       }
-      var frameChanged = this.currentRow < 0
-                      || this.displayed[this.currentRow].file !== this.displayed[index].file;
+      // Only a row that is genuinely in the current list can say which frame is
+      // on screen. Anything else - including a row index left over from a list
+      // that has since been rebuilt - means the preview cannot be trusted, so
+      // the frame is redrawn rather than assumed to be right.
+      var showing = this.currentDisplayedRow();
+      var frameChanged = showing === null
+                      || showing.file !== this.displayed[index].file;
       this.currentRow = index;
 
       // Setting currentNode fires onCurrentNodeUpdated, which calls back into
@@ -3143,10 +3176,10 @@ var MeteorComposerDialog = class extends Dialog {
    // --- Preview ------------------------------------------------------------
 
    showCurrentFrame() {
-      if (this.currentRow < 0 || this.session === null) {
+      var row = this.currentDisplayedRow();
+      if (row === null || this.session === null) {
          return;
       }
-      var row = this.displayed[this.currentRow];
       var path = this.framePath(row.file);
 
       this.cursor = new Cursor(StdCursor.Wait);
@@ -3172,11 +3205,12 @@ var MeteorComposerDialog = class extends Dialog {
    // frame costs about 750 ms with the stretch locked, and judging takes
    // longer than that, so the wait disappears.
    prefetchNext() {
-      if (this.currentRow < 0 || this.currentRow + 1 >= this.displayed.length) {
+      var current = this.currentDisplayedRow();
+      if (current === null || this.currentRow + 1 >= this.displayed.length) {
          return;
       }
       var nextFile = this.displayed[this.currentRow + 1].file;
-      if (nextFile === this.displayed[this.currentRow].file) {
+      if (nextFile === current.file) {
          return;
       }
       var path = this.framePath(nextFile);
@@ -3196,10 +3230,11 @@ var MeteorComposerDialog = class extends Dialog {
    // (up to 5 were measured), and the point of the overlay is telling them
    // apart.
    updateOverlay() {
-      if (this.currentRow < 0) {
+      var current = this.currentDisplayedRow();
+      if (current === null) {
          return;
       }
-      var file = this.displayed[this.currentRow].file;
+      var file = current.file;
       var candidates = [];
       var verdicts = [];
       var numbers = [];
@@ -3224,10 +3259,10 @@ var MeteorComposerDialog = class extends Dialog {
    // --- Judging ------------------------------------------------------------
 
    judge(verdict, stay) {
-      if (this.currentRow < 0) {
+      var row = this.currentDisplayedRow();
+      if (row === null) {
          return;
       }
-      var row = this.displayed[this.currentRow];
       setVerdict(this.session, row.id, verdict);
       this.dirty = true;
 
