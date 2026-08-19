@@ -193,6 +193,27 @@ PJSR スクリプトの出力は標準出力に出ません。ログとレポー
 
 同じ形の失敗をもう 1 件やっている。分類器のテストが理由文に `stationary` という語を含むかを見ていたため、操作者向けに書き直した時点で失敗した（守るべき性質は保たれていた）。**語ではなく意味を検査すること。**
 
+## 純粋モジュールから sibling への遅延依存は PJSR で落ちる
+
+純粋モジュールは無条件に `require` できない（PJSR に `require` は無い）ので、次の形を使う。
+
+```js
+(typeof mergeCollinear === "function") ? { mergeCollinear: mergeCollinear }
+                                       : require("./candidate_ops.js")
+```
+
+**sibling を `#include` していない PJSR スクリプトでは `require` の枝に入り、ReferenceError で落ちる。** Process Console にしか出ないので、外からは「起動して何もせず終了した」ように見える。`detection_core.js` → `candidate_ops.js` の依存を足したとき、`run_detection.js`（評価データを作る当のスクリプト）を含む 3 本が該当した。
+
+`tests/ut/test_module_isolation.js` が静的に検査する。**遅延 `require` を持つモジュールを `#include` するスクリプトは、その sibling も `#include` すること。**
+
+## フィールドの欠落は失敗しない
+
+`mergeCollinear` の `combineGroup` は `edgeContact` / `minorLength` / `majorLength` / `bbox` を返していなかった。**下流には `undefined` が届き、それを読む側は黙って何もしない。**
+
+特に `edgeContact` は分類器が `>= 0.30` で比較するので、`undefined >= 0.30` は false になり、**データ境界に沿った候補が満点のまま素通りする**（5.6 の対策が無効化される）。
+
+**候補オブジェクトを組み立て直す関数を書いたら、元が持っていたフィールドを 1 つずつ突き合わせること。** 型の無い言語では、フィールドを落としても何も起きない。
+
 ## 「同じことができる」は主張なので検算する
 
 除外マスクの入力を「深さ + 傾き」から「両端の深さ」へ変えるとき、**2 つの形は同じ直線の族を表せると判断した。誤りだった。**

@@ -97,6 +97,32 @@ var DEFAULT_MERGE_OPTIONS = {
 //
 // Merging is transitive: A-B and B-C put A, B and C in one group even when A
 // and C are far apart.
+// The smallest box covering every fragment's own box. Returns null when no
+// fragment carried one, so candidateBounds() falls back as it does for any
+// candidate without a bbox rather than reading an empty object.
+function unionBoundingBox(group) {
+   var left = Infinity, top = Infinity, right = -Infinity, bottom = -Infinity;
+   var found = false;
+   for (var i = 0; i < group.length; ++i) {
+      var b = group[i].bbox;
+      if (b === undefined || b === null) {
+         continue;
+      }
+      found = true;
+      left = Math.min(left, b.left);
+      top = Math.min(top, b.top);
+      right = Math.max(right, b.right);
+      bottom = Math.max(bottom, b.bottom);
+   }
+   if (!found) {
+      return null;
+   }
+   return {
+      left: left, top: top, right: right, bottom: bottom,
+      width: right - left + 1, height: bottom - top + 1
+   };
+}
+
 function mergeCollinear(candidates, options) {
    var opt = mergeWithDefaults(DEFAULT_MERGE_OPTIONS, options);
    var n = candidates.length;
@@ -237,7 +263,7 @@ function combineGroup(group) {
       }
    }
 
-   return {
+   var merged = {
       cx: cx,
       cy: cy,
       x0: pMin.x, y0: pMin.y,
@@ -252,6 +278,25 @@ function combineGroup(group) {
       fragmentCount: group.length,
       gaps: gaps
    };
+
+   // Everything else the fragments carried has to come across too. A field
+   // dropped here does not fail; it arrives downstream as `undefined` and the
+   // code that reads it quietly does nothing.
+   //
+   // `edgeContact` is the one that matters. The classifier scores a candidate
+   // down when it runs along the boundary of the registered data
+   // (docs/requirements.md 5.6), and `undefined >= 0.30` is false - so a merged
+   // candidate would keep full marks however much of it lay on that edge, and
+   // nothing would say so.
+   merged.edgeContact = maxOf(group, "edgeContact");
+   // The trail's width, which sets the composite's corridor and the preview's
+   // box. Fragments of one trail share a width, so the largest is the right
+   // summary rather than a mean weighted by length.
+   merged.minorLength = maxOf(group, "minorLength");
+   // The merged extent along the axis, which is what `length` already is.
+   merged.majorLength = merged.length;
+   merged.bbox = unionBoundingBox(group);
+   return merged;
 }
 
 function maxOf(list, key) {
@@ -488,6 +533,7 @@ if (typeof module !== "undefined") {
       perpendicularDistance: perpendicularDistance,
       axialGap: axialGap,
       mergeCollinear: mergeCollinear,
+      unionBoundingBox: unionBoundingBox,
       matchAcrossFrames: matchAcrossFrames,
       continuesTrail: continuesTrail,
       perpendicularToLine: perpendicularToLine,

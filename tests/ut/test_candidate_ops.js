@@ -462,6 +462,67 @@ suite("matchAcrossFrames: a two-frame meteor stays two frames", function () {
 });
 
 
+suite("combineGroup carries the fields the fragments had", function () {
+   // A field dropped in the merge does not fail; it arrives downstream as
+   // `undefined` and the code reading it quietly does nothing. edgeContact is
+   // the one that matters: the classifier compares it against a threshold, and
+   // `undefined >= 0.30` is false, so a merged candidate lying entirely along
+   // the boundary of the registered data would keep full marks in silence.
+   var a = {
+      cx: 10, cy: 10, x0: 0, y0: 10, x1: 20, y1: 10,
+      length: 20, angle: 0, elongation: 10, pixelCount: 40,
+      minorLength: 3, majorLength: 20, edgeContact: 0.0,
+      bbox: { left: 0, top: 8, right: 20, bottom: 12, width: 21, height: 5 }
+   };
+   var b = {
+      cx: 32, cy: 10, x0: 24, y0: 10, x1: 40, y1: 10,
+      length: 16, angle: 0, elongation: 8, pixelCount: 30,
+      minorLength: 5, majorLength: 16, edgeContact: 0.9,
+      bbox: { left: 24, top: 8, right: 40, bottom: 12, width: 17, height: 5 }
+   };
+   var merged = ops.mergeCollinear([a, b], null);
+   ok(merged.length === 1, "the two fragments become one candidate");
+   var m = merged[0];
+
+   close(m.edgeContact, 0.9, 1e-9,
+         "edgeContact is the largest of the fragments': if any part of the "
+         + "object runs along the data boundary, the object does");
+   close(m.minorLength, 5, 1e-9, "minorLength is the widest fragment's");
+   close(m.majorLength, m.length, 1e-9,
+         "majorLength is the merged extent along the axis");
+   ok(m.bbox !== undefined && m.bbox !== null, "there is a bounding box");
+   ok(m.bbox.left === 0 && m.bbox.top === 8
+      && m.bbox.right === 40 && m.bbox.bottom === 12,
+      "and it covers both fragments (got " + JSON.stringify(m.bbox) + ")");
+   ok(m.bbox.width === 41 && m.bbox.height === 5,
+      "with its width and height filled in");
+});
+
+suite("combineGroup: a lone candidate keeps everything it had", function () {
+   var only = {
+      cx: 5, cy: 5, x0: 0, y0: 5, x1: 10, y1: 5,
+      length: 10, angle: 0, elongation: 7, pixelCount: 20,
+      minorLength: 2, majorLength: 10, edgeContact: 0.4,
+      bbox: { left: 0, top: 4, right: 10, bottom: 6, width: 11, height: 3 }
+   };
+   var m = ops.mergeCollinear([only], null)[0];
+   close(m.edgeContact, 0.4, 1e-9, "edgeContact survives");
+   close(m.minorLength, 2, 1e-9, "minorLength survives");
+   ok(m.bbox !== null && m.bbox.right === 10, "the box survives");
+   ok(m.fragmentCount === 1, "and it is reported as one fragment");
+});
+
+suite("unionBoundingBox: fragments without a box", function () {
+   var withBox = { bbox: { left: 2, top: 3, right: 8, bottom: 9 } };
+   var without = {};
+   var u = ops.unionBoundingBox([withBox, without]);
+   ok(u !== null && u.left === 2 && u.right === 8,
+      "one box among several is still a box");
+   ok(ops.unionBoundingBox([without, without]) === null,
+      "no boxes at all gives null, so candidateBounds() falls back as usual");
+});
+
+
 console.log("\n============================================");
 console.log("passed: " + passed + "  failed: " + failed);
 if (failed > 0) {

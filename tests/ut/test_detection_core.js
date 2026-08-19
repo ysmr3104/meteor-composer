@@ -600,6 +600,72 @@ suite("edgeContact separates lying along the boundary from touching it", functio
 
 //----------------------------------------------------------------------------
 
+//----------------------------------------------------------------------------
+// Fragments of one trail
+//
+// Thresholding is per-sample, so a trail that dips below the threshold anywhere
+// comes back as several components. detectCandidates merges them, and the
+// fixture below is built by breaking a real trail rather than by writing two
+// candidate objects by hand: the merge has to survive whatever the detector
+// actually produces, and a hand-written pair only tests what I assume it
+// produces.
+//----------------------------------------------------------------------------
+
+suite("detectCandidates merges the fragments of one trail", function () {
+   var f = syn.makeField(400, 300, 0);
+   syn.addGaussianNoise(f, 0.002, 21);
+   // One straight trail right across the field.
+   syn.addLine(f, 40, 150, 360, 190, 2.0, 0.06);
+
+   var whole = core.detectCandidates(f, { k: 5, minPixels: 12, minElongation: 6 });
+   ok(whole.candidates.length === 1,
+      "the unbroken trail is one candidate (got " + whole.candidates.length + ")");
+
+   // Now erase a short stretch of it, which is what a faint patch does.
+   var broken = syn.cloneField(f);
+   var x, y;
+   for (y = 0; y < broken.height; ++y) {
+      for (x = 196; x <= 204; ++x) {
+         syn.fieldSet(broken, x, y, 0.0);
+      }
+   }
+
+   var got = core.detectCandidates(broken, { k: 5, minPixels: 12, minElongation: 6 });
+   ok(got.candidates.length === 1,
+      "the broken trail is still reported as one candidate (got "
+      + got.candidates.length + ")");
+   ok(got.fragmentsMerged >= 1,
+      "and the merge is what did it (fragmentsMerged "
+      + got.fragmentsMerged + ")");
+
+   var c = got.candidates[0];
+   ok(c.fragmentCount >= 2,
+      "the candidate says how many pieces it came from (" + c.fragmentCount + ")");
+   ok(c.length > 250,
+      "it spans the whole trail rather than one side of the break (length "
+      + c.length.toFixed(0) + ")");
+   ok(typeof c.edgeContact === "number",
+      "edgeContact came through the merge (" + c.edgeContact + ")");
+   ok(typeof c.minorLength === "number" && c.minorLength > 0,
+      "so did minorLength (" + c.minorLength + ")");
+   ok(c.bbox !== undefined && c.bbox !== null, "and the bounding box");
+});
+
+suite("detectCandidates leaves unrelated trails alone", function () {
+   var f = syn.makeField(400, 300, 0);
+   syn.addGaussianNoise(f, 0.002, 21);
+   // Two trails that are nowhere near each other, at different angles.
+   syn.addLine(f, 40, 60, 200, 90, 2.0, 0.06);
+   syn.addLine(f, 60, 260, 200, 200, 2.0, 0.06);
+
+   var got = core.detectCandidates(f, { k: 5, minPixels: 12, minElongation: 6 });
+   ok(got.candidates.length === 2,
+      "two separate trails stay two candidates (got " + got.candidates.length + ")");
+   ok(got.fragmentsMerged === 0,
+      "and nothing was merged (fragmentsMerged " + got.fragmentsMerged + ")");
+});
+
+
 console.log("\n============================================");
 console.log("passed: " + passed + "  failed: " + failed);
 if (failed > 0) {
