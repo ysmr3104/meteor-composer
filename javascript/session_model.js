@@ -189,6 +189,27 @@ function summarize(session) {
    };
 }
 
+// Where a row went after the list was rebuilt.
+//
+// The displayed list is filtered and sorted, so a position in it means nothing
+// once the filter changes: row 40 of 411 is a different candidate from row 40
+// of 92, and may not exist at all. Rows carry an id, which does survive, so the
+// selection follows the candidate rather than the position.
+//
+// Returns -1 when the row is no longer displayed - it was filtered out, and
+// there is nothing to follow.
+function indexOfRowId(displayed, id) {
+   if (id === undefined || id === null) {
+      return -1;
+   }
+   for (var i = 0; i < displayed.length; ++i) {
+      if (displayed[i].id === id) {
+         return i;
+      }
+   }
+   return -1;
+}
+
 // --- Navigation -------------------------------------------------------------
 
 // The next row still to be judged, at or after `fromIndex`. Returns an index
@@ -435,6 +456,7 @@ if (typeof module !== "undefined") {
       rowById: rowById,
       setVerdict: setVerdict,
       summarize: summarize,
+      indexOfRowId: indexOfRowId,
       nextUnreviewed: nextUnreviewed,
       step: step,
       filterRows: filterRows,

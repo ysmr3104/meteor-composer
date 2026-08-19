@@ -629,6 +629,49 @@ suite("a lazily required sibling is included wherever its module is", function (
 });
 
 
+//----------------------------------------------------------------------------
+// The selected row is read through one accessor
+//
+// `currentRow` is an index into `displayed`, and `displayed` is rebuilt every
+// time the filter or the sort changes. An index held across a rebuild can point
+// past the end - which is what happened the first time an operator narrowed the
+// list below the selected row: `this.displayed[this.currentRow].file` threw on
+// `undefined`, and every subsequent interaction threw again.
+//
+// Several call sites guarded only `currentRow < 0`, which is the half of the
+// range that never was the problem. Rather than adding an upper bound to each
+// and hoping the next one remembers, the read lives in currentDisplayedRow()
+// and this forbids the direct form.
+//----------------------------------------------------------------------------
+
+suite("the selected row is only read through currentDisplayedRow()", function () {
+   ok(fs.existsSync(MAIN), "MeteorComposer.js exists");
+   if (!fs.existsSync(MAIN)) {
+      return;
+   }
+   var source = fs.readFileSync(MAIN, "utf8");
+
+   ok(/currentDisplayedRow\s*\(\s*\)\s*\{/.test(source),
+      "the accessor exists");
+
+   var lines = source.split("\n");
+   var direct = [];
+   for (var i = 0; i < lines.length; ++i) {
+      if (lines[i].indexOf("this.displayed[this.currentRow]") < 0) {
+         continue;
+      }
+      // The accessor's own read is the one place it belongs.
+      if (/^\s*return this\.displayed\[this\.currentRow\];\s*$/.test(lines[i])) {
+         continue;
+      }
+      direct.push("line " + (i + 1) + ": " + lines[i].trim());
+   }
+   ok(direct.length === 0,
+      "no call site indexes displayed by currentRow directly"
+      + (direct.length > 0 ? ":\n        " + direct.join("\n        ") : ""));
+});
+
+
 console.log("\n============================================");
 console.log("passed: " + passed + "  failed: " + failed);
 if (failed > 0) {
