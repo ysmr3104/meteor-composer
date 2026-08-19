@@ -268,16 +268,87 @@ suite("matchAcrossFrames: tolerates a skipped frame", function () {
    ok(tracks[0].length === 3, "three members");
 });
 
-suite("matchAcrossFrames: a long gap starts a new track", function () {
+suite("matchAcrossFrames: proximity alone does not bridge a long gap", function () {
+   // Four frames apart and nowhere near the earlier trail's line: neither rule
+   // applies, so these are two objects.
    var frames = [
       frame(0, "f0.xisf", [segment(0, 100, 200, 100)]),
       frame(1, "f1.xisf", []),
       frame(2, "f2.xisf", []),
       frame(3, "f3.xisf", []),
-      frame(4, "f4.xisf", [segment(80, 100, 280, 100)])
+      frame(4, "f4.xisf", [segment(80, 300, 280, 300)])   // 200 samples off the line
    ];
    var tracks = ops.matchAcrossFrames(frames, { maxFrameGap: 2 });
    ok(tracks.length === 2, "two separate tracks (got " + tracks.length + ")");
+});
+
+suite("matchAcrossFrames: a continuation bridges a longer gap than proximity", function () {
+   // The two rules have different reaches on purpose. A trail that is missed
+   // for three frames and comes back ON THE SAME LINE is the same object; a
+   // disc of the same reach would link almost anything.
+   //
+   // This is the strobing aircraft: its anti-collision light flashes, so the
+   // trail is a row of dashes and is only detected when enough of them run
+   // together. Present in DSC05337, absent in 5338 to 5340, present again from
+   // 5341 - and the isolated frame came back with a perfect score at the top
+   // of the strict list.
+   var frames = [
+      frame(0, "f0.xisf", [segment(0, 100, 200, 100)]),
+      frame(1, "f1.xisf", []),
+      frame(2, "f2.xisf", []),
+      frame(3, "f3.xisf", []),
+      frame(4, "f4.xisf", [segment(260, 100, 460, 100)])
+   ];
+   var tracks = ops.matchAcrossFrames(frames, { maxFrameGap: 2 });
+   ok(tracks.length === 1,
+      "collinear across four frames is one object (got " + tracks.length + ")");
+   ok(tracks[0].length === 2, "with two members");
+
+   // And the reach is finite: beyond maxContinuationFrameGap it is two objects
+   // again, however well they line up.
+   var farther = [
+      frame(0, "f0.xisf", [segment(0, 100, 200, 100)]),
+      frame(1, "f1.xisf", []),
+      frame(2, "f2.xisf", []),
+      frame(3, "f3.xisf", []),
+      frame(4, "f4.xisf", []),
+      frame(5, "f5.xisf", []),
+      frame(6, "f6.xisf", [segment(260, 100, 460, 100)])
+   ];
+   var far = ops.matchAcrossFrames(farther, { maxFrameGap: 2 });
+   ok(far.length === 2,
+      "six frames apart is beyond the continuation's reach (got "
+      + far.length + ")");
+});
+
+suite("matchAcrossFrames: the two reaches are configured separately", function () {
+   // Raising both was measured to cost a labelled meteor; raising only the
+   // continuation was not. The separation is the point, so it is asserted.
+   var frames = [
+      frame(0, "f0.xisf", [segment(0, 100, 200, 100)]),
+      frame(1, "f1.xisf", []),
+      frame(2, "f2.xisf", []),
+      frame(3, "f3.xisf", []),
+      frame(4, "f4.xisf", [segment(260, 100, 460, 100)])
+   ];
+   ok(ops.matchAcrossFrames(frames, { maxContinuationFrameGap: 2 }).length === 2,
+      "with the continuation's reach cut to two, the gap is not bridged");
+   ok(ops.matchAcrossFrames(frames, { maxContinuationFrameGap: 4 }).length === 1,
+      "with four, it is");
+
+   // Proximity keeps its own, shorter reach: a trail that is near but NOT on
+   // the earlier line is not linked across four frames.
+   var offLine = [
+      frame(0, "f0.xisf", [segment(0, 100, 200, 100)]),
+      frame(1, "f1.xisf", []),
+      frame(2, "f2.xisf", []),
+      frame(3, "f3.xisf", []),
+      frame(4, "f4.xisf", [segment(210, 160, 410, 160)])   // 60 off the line
+   ];
+   ok(ops.matchAcrossFrames(offLine, { maxFrameGap: 2, maxContinuationFrameGap: 4 }).length === 2,
+      "near but off the line stays two objects across four frames");
+   ok(ops.matchAcrossFrames(offLine, { maxFrameGap: 4 }).length === 1,
+      "proximity would have linked it, which is why its reach is left at two");
 });
 
 suite("matchAcrossFrames: different orientation is not linked", function () {
