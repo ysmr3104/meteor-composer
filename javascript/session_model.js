@@ -94,6 +94,11 @@ function buildRows(results) {
             frameIndex: i,
             indexInFrame: j,
             candidate: candidates[j],
+            // Lifted out of the candidate because the classifier reads
+            // row.colour. Left undefined when the frame carried no measurement
+            // - an older results file, or a trail the walk could not find -
+            // and scoreCandidate then simply omits the term.
+            colour: candidates[j].colour,
             verdict: VERDICT.UNREVIEWED,
             trackId: null,
             trackLength: 1,

@@ -402,6 +402,78 @@ suite("a candidate that lies along the edge of the data is scored down", functio
 
 //----------------------------------------------------------------------------
 
+//----------------------------------------------------------------------------
+// Colour cannot drop a candidate on its own
+//
+// Green fraction separates meteors from everything else better than any other
+// single feature measured (6.1.0), but not cleanly: the greenest labelled
+// not-meteor sits above the least green labelled meteor. A meteor that is not
+// green is a real thing, and the term must never be able to hide one by
+// itself.
+//
+// Two properties keep that true, and both are asserted here rather than left
+// as a happy accident of the current numbers:
+//
+//   1. the score is multiplied by (1 - colourWeight) + colourWeight * rank, so
+//      the worst it can do is (1 - colourWeight)
+//   2. that floor stays above the strictest preset's cutoff
+//
+// If someone raises colourWeight past 0.80, a candidate at the very bottom of
+// the session's colour ranking falls out of the strict list on colour alone.
+// That is the change this refuses.
+//----------------------------------------------------------------------------
+
+suite("the colour term alone cannot drop a candidate below any preset", function () {
+   var weight = clf.DEFAULT_SCORE_OPTIONS.colourWeight;
+   var floor = 1 - weight;
+
+   var names = clf.presetNames();
+   var strictest = 0;
+   for (var i = 0; i < names.length; ++i) {
+      if (clf.PRESETS[names[i]].cutoff > strictest) {
+         strictest = clf.PRESETS[names[i]].cutoff;
+      }
+   }
+   ok(strictest > 0, "there is a strictest preset to check against");
+   ok(floor > strictest,
+      "the colour term's floor (" + floor.toFixed(2) + ") stays above the "
+      + "strictest cutoff (" + strictest.toFixed(2) + ")");
+});
+
+suite("a meteor at the bottom of the colour ranking survives", function () {
+   // One candidate as red as the population allows, everything else greener.
+   // Nothing else is against it: it moves, it is not on the data boundary.
+   var rows = [];
+   var i;
+   for (i = 0; i < 20; ++i) {
+      rows.push({
+         trackLength: 1, persistent: false, stationary: false,
+         candidate: { edgeContact: 0 },
+         colour: { r: 1, g: 3 + i, b: 1 }
+      });
+   }
+   // The least green of the lot.
+   rows.push({
+      trackLength: 1, persistent: false, stationary: false,
+      candidate: { edgeContact: 0 },
+      colour: { r: 3, g: 1, b: 3 }
+   });
+
+   clf.scoreAll(rows, null);
+   var reddest = rows[rows.length - 1];
+
+   var names = clf.presetNames();
+   for (i = 0; i < names.length; ++i) {
+      var cutoff = clf.PRESETS[names[i]].cutoff;
+      ok(reddest.score >= cutoff,
+         "the reddest candidate (score " + reddest.score.toFixed(3)
+         + ") survives the " + names[i] + " cutoff of " + cutoff);
+   }
+   ok(reddest.score < rows[rows.length - 2].score,
+      "it is still ranked below a greener one, which is what the term is for");
+});
+
+
 console.log("\n============================================");
 console.log("passed: " + passed + "  failed: " + failed);
 if (failed > 0) {

@@ -500,6 +500,24 @@ suite("indexOfRowId: following a candidate through a filter", function () {
 });
 
 
+suite("buildRows: the colour comes through to the row", function () {
+   // The classifier reads row.colour, not row.candidate.colour, so the lift has
+   // to happen. Without it the colour term is silently inert - which is exactly
+   // the state this project was in from the day the term was written until the
+   // day the measurement was wired up.
+   var c = cand(0, 0, 10, 0);
+   c.colour = { r: 0.01, g: 0.04, b: 0.01 };
+   var s = model.createSession(results([frame("a.xisf", [c])]));
+   ok(s.rows[0].colour !== undefined, "the row carries a colour");
+   close(s.rows[0].colour.g, 0.04, 1e-12, "and it is the one measured");
+
+   var plain = model.createSession(results([frame("b.xisf", [cand(0, 0, 10, 0)])]));
+   ok(plain.rows[0].colour === undefined,
+      "a candidate with no measurement leaves the row's colour unset, so the "
+      + "classifier omits the term rather than guessing");
+});
+
+
 console.log("\n============================================");
 console.log("passed: " + passed + "  failed: " + failed);
 if (failed > 0) {

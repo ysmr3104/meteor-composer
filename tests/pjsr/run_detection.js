@@ -25,6 +25,7 @@
 // PJSR that has to be included here: the fallback it would otherwise take is
 // `require`, which does not exist.
 #include "../../javascript/candidate_ops.js"
+#include "../../javascript/trail_colour.js"
 
 var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test";
 var GROUP = "Light_BIN-1_6024x4024_EXPOSURE-13.00s_FILTER-NoFilter_RGB";
@@ -101,20 +102,47 @@ function listFrames(dir) {
 
 // PJSR layer: image file -> plain field. This is the boundary described in
 // docs/tests.md section 2; everything after it is pure JavaScript.
-function loadField(path, factor) {
+//
+// One open serves both jobs. Detection wants the reduced luminance field; the
+// colour measurement wants the full-resolution image. Opening the file costs
+// about 800 ms of the ~1.2 s a frame takes, so reading it twice would add most
+// of ten minutes to a session.
+function withFrame(path, factor, fn) {
    var windows = ImageWindow.open(path);
    if (!windows || windows.length === 0) {
       return null;
    }
    var win = windows[0];
    try {
+      var image = win.mainView.image;
       var Y = new Image();
-      win.mainView.image.getLuminance(Y);
+      image.getLuminance(Y);
       Y.resample(1.0 / factor);
       var m = Y.toMatrix();
-      return { data: m.toArray(), width: Y.width, height: Y.height };
+      var field = { data: m.toArray(), width: Y.width, height: Y.height };
+      return fn(field, image);
    } finally {
       win.forceClose();
+   }
+}
+
+// The same measurement the UI takes, so the evaluation data and what an
+// operator sees carry the same numbers.
+function attachColours(image, candidates, factor) {
+   var sampler = function (x, y, channel) {
+      return image.sample(x, y, channel);
+   };
+   for (var i = 0; i < candidates.length; ++i) {
+      var colour = null;
+      try {
+         colour = measureTrailColour(sampler, candidates[i], factor, factor,
+                                     image.width, image.height, null);
+      } catch (e) {
+         colour = null;
+      }
+      if (colour !== null) {
+         candidates[i].colour = colour;
+      }
    }
 }
 
@@ -144,25 +172,23 @@ function main() {
    for (var i = 0; i < frames.length; ++i) {
       var name = frames[i];
       var frameStart = Date.now();
-      var field = null;
+      var found = null;
       try {
-         field = loadField(REGISTERED_DIR + "/" + name, SCREEN_FACTOR);
+         found = withFrame(REGISTERED_DIR + "/" + name, SCREEN_FACTOR,
+            function (field, image) {
+               var result = detectCandidates(field, OPTIONS, null);
+               attachColours(image, result.candidates, SCREEN_FACTOR);
+               return { field: field, result: result };
+            });
       } catch (e) {
          logAndFlush("  [ERROR] " + name + " => " + e);
       }
-      if (field === null) {
+      if (found === null) {
          results.push({ file: name, error: "could not open", candidates: [] });
          continue;
       }
-
-      var r;
-      try {
-         r = detectCandidates(field, OPTIONS, null);
-      } catch (e2) {
-         logAndFlush("  [ERROR] detect " + name + " => " + e2);
-         results.push({ file: name, error: "" + e2, candidates: [] });
-         continue;
-      }
+      var field = found.field;
+      var r = found.result;
 
       totalCandidates += r.candidates.length;
       if (r.candidates.length > 0) {
