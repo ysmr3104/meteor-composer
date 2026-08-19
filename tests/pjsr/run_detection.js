@@ -179,6 +179,7 @@ function main() {
          // How much of the frame held no data. Recorded so that a frame with a
          // large empty region is identifiable from the results file alone.
          noDataSamples: r.noDataSamples,
+         fragmentsMerged: r.fragmentsMerged,
          candidates: r.candidates,
          ms: Date.now() - frameStart
       });

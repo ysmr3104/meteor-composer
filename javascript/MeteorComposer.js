@@ -2772,6 +2772,10 @@ var MeteorComposerDialog = class extends Dialog {
                record.median = r.median;
                record.componentCount = r.componentCount;
                record.noDataSamples = r.noDataSamples;
+               // How many components were joined into one candidate. Recorded so
+               // that a candidate count can be read against the raw component
+               // count without re-running the detection.
+               record.fragmentsMerged = r.fragmentsMerged;
             } else {
                record.error = "could not open";
             }
