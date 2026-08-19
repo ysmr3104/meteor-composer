@@ -19,7 +19,7 @@
 // Console.
 //============================================================================
 
-#define VERSION "0.1.0"
+#define VERSION "1.0.0"
 #define TITLE   "MeteorComposer"
 
 #include "paths.js"
@@ -4057,16 +4057,41 @@ var MeteorComposerDialog = class extends Dialog {
 // Entry point
 //============================================================================
 
+// Ground-truth mode builds the evaluation set the detector is measured
+// against. It detects with deliberately loose settings, shows no scores and no
+// cutoff, and lists every candidate in capture order - all of which are
+// requirements for the labelling not to be circular (docs/tests.md 5-2), and
+// all of which make it look like a broken tool to anyone using it to composite
+// meteors.
+//
+// So it is not offered. Someone screening a night's frames has no way to answer
+// "which mode?", and choosing wrong costs them a session. The mode dialog only
+// appears when this key is set, which is a thing only its author does:
+//
+//    Settings.write( "MeteorComposer/enableGroundTruthMode", DataType.Boolean, true );
+//
+// Run in the Script Editor once; it persists. Setting it to false, or deleting
+// it, puts things back.
+function groundTruthModeAvailable() {
+   var enabled = Settings.read(SETTINGS_KEY + "/enableGroundTruthMode",
+                               DataType.Boolean);
+   return enabled === true;
+}
+
 function main() {
    console.show();
    console.writeln("<end><cbr>" + TITLE + " " + VERSION);
 
-   var modeDialog = new ModeDialog;
-   if (!modeDialog.execute()) {
-      return;
+   var mode = MODE.SCREENING;
+   if (groundTruthModeAvailable()) {
+      var modeDialog = new ModeDialog;
+      if (!modeDialog.execute()) {
+         return;
+      }
+      mode = modeDialog.mode;
    }
 
-   var dialog = new MeteorComposerDialog(modeDialog.mode);
+   var dialog = new MeteorComposerDialog(mode);
    dialog.execute();
    dialog.saveSettings();
 }

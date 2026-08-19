@@ -1,3 +1,6 @@
 .DS_Store
 *.log
 HANDOVER.md
+
+# ビルドの一時ディレクトリ
+.build-tmp/
