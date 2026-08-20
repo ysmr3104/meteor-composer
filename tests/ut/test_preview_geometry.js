@@ -391,6 +391,151 @@ suite("layoutOverlay", function () {
 
 //----------------------------------------------------------------------------
 
+suite("boxIsVisible: the margin decides what counts as on screen", function () {
+   var view = { width: 800, height: 600, zoom: 1.0, scrollX: 0, scrollY: 0,
+                maxScrollX: 5224, maxScrollY: 3424 };
+
+   // Comfortably inside.
+   ok(geom.boxIsVisible({ left: 100, top: 100, right: 200, bottom: 150 },
+                        view, 24),
+      "a box well inside the viewport is visible");
+
+   // Straddling the right edge.
+   ok(!geom.boxIsVisible({ left: 700, top: 100, right: 900, bottom: 150 },
+                         view, 0),
+      "a box running past the right edge is not visible");
+
+   // Exactly on the edge. Visible with no margin, not visible once a margin
+   // is asked for - this is the whole point of the margin.
+   ok(geom.boxIsVisible({ left: 0, top: 0, right: 800, bottom: 600 },
+                        view, 0),
+      "a box exactly filling the viewport is visible with no margin");
+   ok(!geom.boxIsVisible({ left: 0, top: 0, right: 800, bottom: 600 },
+                         view, 1),
+      "the same box is not visible once 1 px of margin is required");
+
+   // Scroll and zoom are both applied: display 900 at zoom 2 minus scroll
+   // 1000 lands at 800, the far edge.
+   var view2 = { width: 800, height: 600, zoom: 2.0, scrollX: 1000,
+                 scrollY: 0, maxScrollX: 5224, maxScrollY: 3424 };
+   ok(geom.boxIsVisible({ left: 500, top: 10, right: 900, bottom: 100 },
+                        view2, 0),
+      "zoom and scroll are both honoured");
+   ok(!geom.boxIsVisible({ left: 499, top: 10, right: 900, bottom: 100 },
+                         view2, 0),
+      "one display pixel further left at zoom 2 falls off the near edge");
+});
+
+//----------------------------------------------------------------------------
+
+suite("centringScroll: centres the box, clamped to the scroll range", function () {
+   var view = { width: 800, height: 600, zoom: 1.0, scrollX: 0, scrollY: 0,
+                maxScrollX: 5224, maxScrollY: 3424 };
+
+   // Box centre at (2000, 1500); half the viewport is (400, 300).
+   var s = geom.centringScroll({ left: 1950, top: 1450, right: 2050,
+                                 bottom: 1550 }, view);
+   ok(s.x === 1600, "scrollX puts the box centre at the viewport centre");
+   ok(s.y === 1200, "scrollY puts the box centre at the viewport centre");
+
+   // Near the top-left corner the ideal scroll is negative, so it clamps to 0
+   // and the box ends up off-centre. That is correct: there is nothing beyond
+   // the frame to show.
+   var corner = geom.centringScroll({ left: 0, top: 0, right: 40, bottom: 40 },
+                                    view);
+   ok(corner.x === 0 && corner.y === 0, "clamps at the near edge");
+
+   // Same at the far edge.
+   var far = geom.centringScroll({ left: 6000, top: 4000, right: 6024,
+                                   bottom: 4024 }, view);
+   ok(far.x === view.maxScrollX && far.y === view.maxScrollY,
+      "clamps at the far edge");
+
+   // Zoom multiplies the display coordinate before centring.
+   var view2 = { width: 800, height: 600, zoom: 2.0, scrollX: 0, scrollY: 0,
+                 maxScrollX: 11248, maxScrollY: 7448 };
+   var z = geom.centringScroll({ left: 950, top: 450, right: 1050,
+                                 bottom: 550 }, view2);
+   ok(z.x === 2 * 1000 - 400, "centring accounts for zoom on x");
+   ok(z.y === 2 * 500 - 300, "centring accounts for zoom on y");
+});
+
+//----------------------------------------------------------------------------
+
+suite("scrollToShow: moves only when it has to", function () {
+   var box = { left: 3000, top: 2000, right: 3040, bottom: 2040 };
+
+   // Fit: the whole frame is on screen, so there is nothing to scroll. This is
+   // the case that must not move - the operator stepping through a list at Fit
+   // should see a still frame. There is no dedicated branch for it; the zero
+   // scroll range leaves centring nowhere to go.
+   var fit = { width: 800, height: 600, zoom: 0.125, scrollX: 0, scrollY: 0,
+               maxScrollX: 0, maxScrollY: 0 };
+   ok(geom.scrollToShow(box, fit, 24) === null,
+      "at Fit nothing scrolls, even for a candidate far from the centre");
+
+   // Same at Fit for a candidate in the frame's corner, which falls inside the
+   // margin and so does not count as visible. It still must not move.
+   ok(geom.scrollToShow({ left: 0, top: 0, right: 8, bottom: 8 }, fit, 24)
+      === null,
+      "nor for a candidate in the corner of the frame at Fit");
+
+   // No viewport yet. Before the first resize the viewport reports zero size,
+   // and every comparison against it is meaningless: a box would be judged
+   // off screen and the frame yanked to a position computed from nothing.
+   var unsized = { width: 0, height: 0, zoom: 1.0, scrollX: 0, scrollY: 0,
+                   maxScrollX: 5224, maxScrollY: 3424 };
+   ok(geom.scrollToShow(box, unsized, 24) === null,
+      "a viewport with no size does not scroll");
+
+   // Zoomed in, candidate off screen: bring it to the middle.
+   var away = { width: 800, height: 600, zoom: 1.0, scrollX: 0, scrollY: 0,
+                maxScrollX: 5224, maxScrollY: 3424 };
+   var target = geom.scrollToShow(box, away, 24);
+   ok(target !== null, "an off-screen candidate is brought into view");
+   ok(target.x === 3020 - 400 && target.y === 2020 - 300,
+      "and it is centred when it moves");
+
+   // Zoomed in, candidate already comfortably on screen: leave it alone. The
+   // view staying put while stepping through nearby candidates is the point.
+   //
+   // The scroll here is deliberately NOT the centring one. Picking a scroll
+   // that already centres the box would let this pass even without the
+   // already-visible check, because the centring result would equal the
+   // current position and the no-op check would catch it instead. Off-centre
+   // but visible is the only state that pins this behaviour down.
+   var near = { width: 800, height: 600, zoom: 1.0, scrollX: 2400,
+                scrollY: 1600, maxScrollX: 5224, maxScrollY: 3424 };
+   ok(geom.boxIsVisible(box, near, 24), "the box really is on screen here");
+   ok(geom.centringScroll(box, near).x !== near.scrollX,
+      "and it is off-centre, so centring would move the view");
+   ok(geom.scrollToShow(box, near, 24) === null,
+      "a candidate already in view does not move the frame");
+
+   // Off screen, but centring would not change the scroll: still null, so no
+   // repaint is queued for a view that did not move. A box at the very corner
+   // of the frame clamps to the scroll position we are already at.
+   var atCorner = { width: 800, height: 600, zoom: 1.0, scrollX: 0,
+                    scrollY: 0, maxScrollX: 5224, maxScrollY: 3424 };
+   var cornerBox = { left: 0, top: 0, right: 4, bottom: 4 };
+   ok(!geom.boxIsVisible(cornerBox, atCorner, 24),
+      "a box inside the margin does not count as visible");
+   ok(geom.scrollToShow(cornerBox, atCorner, 24) === null,
+      "but it does not scroll either, because centring clamps to where we are");
+
+   // One axis scrollable and the other not is the common case for a portrait
+   // frame in a wide viewport. The unscrollable axis must not block the other.
+   var oneAxis = { width: 800, height: 600, zoom: 1.0, scrollX: 0, scrollY: 0,
+                   maxScrollX: 0, maxScrollY: 3424 };
+   var below = { left: 100, top: 2000, right: 140, bottom: 2040 };
+   var moved = geom.scrollToShow(below, oneAxis, 24);
+   ok(moved !== null, "a scrollable y axis still follows the selection");
+   ok(moved.x === 0, "the unscrollable x axis stays clamped at 0");
+   ok(moved.y === 2020 - 300, "y is centred");
+});
+
+//----------------------------------------------------------------------------
+
 console.log("\n============================================");
 console.log("passed: " + passed + "  failed: " + failed);
 if (failed > 0) {
