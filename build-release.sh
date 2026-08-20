@@ -77,13 +77,27 @@ echo "Small テスト: 全通過"
 
 # 3. 署名の有無を確認する
 #
-# 署名が無いと Execute Script で実行できません。警告に留めるのは、
-# パッケージ自体は作れるからです（署名は PixInsight の CodeSign で行います）。
+# 署名は追跡しない（.gitignore）ので、ここに無いのが開発中の通常の状態です。
+# 配布パッケージに署名が入っていないと利用者が Execute Script で実行できず、
+# 気づくのはインストール後になります。だから警告ではなく停止します。
 SIGNATURE="${SCRIPT_DIR}/javascript/${PACKAGE_NAME}.xsgn"
 if [[ ! -f "$SIGNATURE" ]]; then
-    echo "警告: ${PACKAGE_NAME}.xsgn がありません。" >&2
-    echo "      PixInsight の CodeSign で javascript/ 以下に署名してください。" >&2
-    echo "      署名の無いパッケージは Execute Script で実行できません。" >&2
+    echo "エラー: ${PACKAGE_NAME}.xsgn がありません。" >&2
+    echo "       PixInsight の CodeSign で javascript/${PACKAGE_NAME}.js に" >&2
+    echo "       署名し、生成された .xsgn をここに置いてください。" >&2
+    echo "       署名の無いパッケージは Execute Script で実行できません。" >&2
+    exit 1
+fi
+
+# 署名が古いままだと最悪の結果になります。署名ファイルが存在して内容と
+# 合わない場合、PixInsight は Preferences の設定に関わらず実行を拒否します
+# （「Execution of scripts with invalid code signatures is always forbidden,
+# regardless of this option.」）。署名が .js より古ければ、まず疑う。
+if [[ "$SIGNATURE" -ot "$MAIN_SCRIPT" ]]; then
+    echo "エラー: ${PACKAGE_NAME}.xsgn が ${PACKAGE_NAME}.js より古いです。" >&2
+    echo "       署名後に .js を変更すると署名が不正になり、PixInsight は" >&2
+    echo "       設定に関わらず実行を拒否します。署名し直してください。" >&2
+    exit 1
 fi
 
 # 4. 一時ディレクトリに PixInsight インストール構造を作成
