@@ -4,3 +4,10 @@ HANDOVER.md
 
 # ビルドの一時ディレクトリ
 .build-tmp/
+
+# コード署名。特定のバイト列に対する証明なので、ソースと一緒に版管理しない。
+# 追跡していると .js を 1 行直すたびに署名が不正化し、PixInsight が
+# 「Invalid code signature.」で実行を拒否する（署名が「無い」のは既定で
+# 許可されるが、「不正」は設定に関わらず常に禁止される）。リリース時に
+# CodeSign で署名し、build-release.sh が zip に入れる。
+*.xsgn

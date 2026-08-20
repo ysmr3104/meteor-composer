@@ -19,7 +19,7 @@
 // Console.
 //============================================================================
 
-#define VERSION "1.0.0"
+#define VERSION "1.0.1"
 #define TITLE   "MeteorComposer"
 
 #include "paths.js"
@@ -45,6 +45,12 @@
 #define FRAME_CACHE_SIZE 4
 
 #define DRAG_THRESHOLD 4
+
+// How much clear space a selected candidate needs around it, in view pixels,
+// before the frame view counts as already showing it. Without a margin a
+// candidate flush against the viewport edge is technically drawn but reads as
+// cut off, and the operator pans anyway.
+#define FOLLOW_MARGIN 24
 
 // Written beside the detection results after every verdict, so that closing
 // the dialog - or losing it - never costs the screening work.
@@ -708,6 +714,39 @@ var MeteorPreviewControl = class extends ScrollBox {
    setSelected(index) {
       this.selectedIndex = index;
       this.viewport.update();
+   }
+
+   // Bring the selected candidate into view when the operator moves through
+   // the list. The enlarged pane is always centred on the selection, but this
+   // view was not following it, so at 1:1 the operator had to pan to find the
+   // candidate they had just selected.
+   //
+   // Deliberately does nothing at Fit (the whole frame is already on screen)
+   // and nothing when the candidate is already comfortably visible: moving the
+   // frame when there is no need to makes the view feel unstable while
+   // stepping through a list. Both decisions live in scrollToShow, which is
+   // tested under Node.
+   followSelection() {
+      if (this.displayBitmap === null || this.selectedIndex < 0
+          || this.selectedIndex >= this.candidates.length) {
+         return;
+      }
+      var box = rotateBox(
+         candidateBox(this.candidates[this.selectedIndex],
+                      SCREEN_FACTOR, SCREEN_FACTOR, 2),
+         this.rotation, this.imageWidth, this.imageHeight);
+      var target = scrollToShow(box, {
+         width: this.viewport.width,
+         height: this.viewport.height,
+         zoom: this.zoomLevel,
+         scrollX: this.scrollX,
+         scrollY: this.scrollY,
+         maxScrollX: this.maxScrollX,
+         maxScrollY: this.maxScrollY
+      }, FOLLOW_MARGIN);
+      if (target !== null) {
+         this.setScroll(target.x, target.y);
+      }
    }
 
    // Bring a candidate into view without changing the zoom. Used when the
@@ -3301,6 +3340,7 @@ var MeteorComposerDialog = class extends Dialog {
          numbers.push(i + 1);
       }
       this.preview.setCandidates(candidates, verdicts, numbers, selected);
+      this.preview.followSelection();
       this.updateDetail();
    }
 

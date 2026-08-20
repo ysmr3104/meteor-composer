@@ -317,6 +317,78 @@ function layoutOverlay(candidates, scaleX, scaleY, view, options) {
    return out;
 }
 
+// --- Following the selection ------------------------------------------------
+//
+// Moving through the candidate list while the preview is zoomed in used to
+// leave the preview where it was, so the operator had to pan to find the
+// candidate they had just selected. The enlarged pane was always centred on
+// it, but the frame view was not.
+//
+// Scrolling on every selection change would be worse: most of the time the
+// next candidate is already on screen, and moving the frame under the
+// operator for no reason makes the view feel unstable. So this answers a
+// narrower question - does the box need bringing into view, and if so, where
+// to.
+//
+// `box` is in DISPLAY coordinates (rotation already applied, zoom not).
+// `view` is { width, height, zoom, scrollX, scrollY, maxScrollX, maxScrollY }.
+
+// Is the box fully on screen, with `margin` view pixels to spare on every
+// side? The margin keeps a candidate touching the edge of the viewport from
+// counting as visible: it is technically drawn, but it reads as cut off.
+function boxIsVisible(box, view, margin) {
+   var m = margin === undefined ? 0 : margin;
+   var left = box.left * view.zoom - view.scrollX;
+   var top = box.top * view.zoom - view.scrollY;
+   var right = box.right * view.zoom - view.scrollX;
+   var bottom = box.bottom * view.zoom - view.scrollY;
+   return left >= m && top >= m
+       && right <= view.width - m && bottom <= view.height - m;
+}
+
+// The scroll position that centres the box, clamped to what the scrollbars
+// allow. Clamping means a candidate near the frame's edge ends up off-centre,
+// which is correct: there is nothing beyond the frame to show.
+function centringScroll(box, view) {
+   var cx = (box.left + box.right) / 2 * view.zoom;
+   var cy = (box.top + box.bottom) / 2 * view.zoom;
+   return {
+      x: Math.max(0, Math.min(view.maxScrollX, Math.round(cx - view.width / 2))),
+      y: Math.max(0, Math.min(view.maxScrollY, Math.round(cy - view.height / 2)))
+   };
+}
+
+// Where to scroll to bring the box into view, or null when nothing should
+// move. Null covers three cases that all mean "leave it alone":
+//
+//   - the viewport has no size yet, so nothing can be reasoned about
+//   - the box is already comfortably visible
+//   - centring it would not change the scroll position anyway
+//
+// Returning null rather than the current position lets the caller skip the
+// update entirely, so no repaint is queued for a view that did not move.
+//
+// There is deliberately NO special case for Fit. It looks like one is needed -
+// stepping through the list at Fit must not move the frame - but at Fit the
+// scroll range is zero on both axes, so the only legal scroll position is
+// (0, 0) and centringScroll clamps to it. The no-op check below then returns
+// null. An explicit `maxScroll <= 0` guard was written here first and removed
+// again: deleting it changed no behaviour and no test, which is the definition
+// of a branch that cannot decide anything.
+function scrollToShow(box, view, margin) {
+   if (view.width <= 0 || view.height <= 0) {
+      return null;
+   }
+   if (boxIsVisible(box, view, margin)) {
+      return null;
+   }
+   var target = centringScroll(box, view);
+   if (target.x === view.scrollX && target.y === view.scrollY) {
+      return null;
+   }
+   return target;
+}
+
 // --- Exports ---------------------------------------------------------------
 
 if (typeof module !== "undefined") {
@@ -337,6 +409,9 @@ if (typeof module !== "undefined") {
       candidateCentroid: candidateCentroid,
       labelAnchor: labelAnchor,
       hitTest: hitTest,
-      layoutOverlay: layoutOverlay
+      layoutOverlay: layoutOverlay,
+      boxIsVisible: boxIsVisible,
+      centringScroll: centringScroll,
+      scrollToShow: scrollToShow
    };
 }
