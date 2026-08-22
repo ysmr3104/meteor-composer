@@ -568,9 +568,23 @@ try {
           + ", over the 420 minimum by " + (r.needed - 420) + ")");
    }
    say("");
-   say("  A row that needs more than 420 does not clip on its own - the sizer");
-   say("  gives the elastic frame label the squeeze first. It clips once the");
-   say("  fixed parts alone exceed what the pane gets.");
+   say("  Those are the widths the row would like. What decides the question is");
+   say("  what survives when the row is forced into the 420 the pane can");
+   say("  promise, so force it and read every control back.");
+   say("");
+
+   for (v = 0; v < variants.length; ++v) {
+      var h2 = new Control;
+      var r2 = previewToolbar(h2, variants[v][1], variants[v][2]);
+      h2.setFixedWidth(420);
+      h2.ensureLayoutUpdated();
+      var lockWant = h2.font.width(variants[v][2]) + 20;
+      var lockGot = r2.lock.width;
+      say("  " + pad(variants[v][0], 46)
+          + " at 420: lock " + pad(lockGot, 4) + "/" + pad(lockWant, 4)
+          + (lockGot < lockWant ? "  CLIPPED" : "  ok")
+          + "   frame label " + r2.label.width);
+   }
 } catch (e) {
    say("  ERROR: " + e);
 }
