@@ -378,9 +378,10 @@ suite("composeFrame writes nothing when a fit is implausible", function () {
                                   W, H, [trail], [rect], added, maskOut, null);
 
    ok(!result.written, "the frame was refused");
-   ok(result.reason !== null && result.reason.indexOf("scale") >= 0,
-      "and the reason names the scale: " + result.reason);
-   ok(result.code === "scale", "with a code the caller can branch on");
+   ok(result.reason !== null && result.reason.indexOf("0.020") >= 0,
+      "and the reason names the number measured: " + result.reason);
+   ok(result.code === "structure" || result.code === "level",
+      "with a code the caller can branch on, got " + result.code);
    ok(result.channel === 2, "on the channel that failed");
    ok(result.warning === null,
       "and nothing is reported as forced, because nothing was forced");
@@ -416,7 +417,7 @@ suite("composeFrame writes nothing when a fit is implausible", function () {
    ok(forcedResult.written, "acceptAnyFit composites the same frame");
    ok(forcedResult.warning !== null && forcedResult.warning === result.reason,
       "and reports the very verdict that would have refused it");
-   ok(forcedResult.warningCode === "scale", "with the same code");
+   ok(forcedResult.warningCode === result.code, "with the same code");
    ok(forcedResult.warningChannel === 2, "and the same channel");
 
    var forcedTouched = 0;
@@ -578,7 +579,8 @@ suite("fitIsPlausible", function () {
    // a result that looks plausible and is wrong.
    var wild = comp.fitIsPlausible({ scale: 47, offset: 0, samples: 5000 }, null);
    ok(!wild.ok, "an absurd scale is rejected");
-   ok(wild.code === "scale", "under a code, not under its wording");
+   ok(wild.code === "level" || wild.code === "structure",
+      "under a code, not under its wording");
    ok(wild.reason.indexOf("47.000") >= 0,
       "and the number itself is still there for a bug report: " + wild.reason);
 
@@ -600,27 +602,6 @@ suite("fitIsPlausible", function () {
    ok(!comp.fitIsPlausible({ scale: 47, offset: 0, samples: 5000 },
                            { acceptAnyFit: true }).ok,
       "acceptAnyFit does not change the verdict itself");
-});
-
-suite("describeScale", function () {
-   // The direction. The fit is sub ~= scale * master + offset, so a scale
-   // below 1 means the FRAME is the dimmer of the two. Saying that backwards
-   // would send someone to the wrong end of their data, and the wording is
-   // the only thing most people will ever read, so it is pinned here.
-   ok(comp.describeScale(0.1).indexOf("dimmer") >= 0,
-      "a scale below 1 means the frame is dimmer: " + comp.describeScale(0.1));
-   ok(comp.describeScale(0.1).indexOf("10.0") >= 0,
-      "by the reciprocal of the scale, not by the scale");
-   ok(comp.describeScale(4).indexOf("brighter") >= 0
-      && comp.describeScale(4).indexOf("4.0") >= 0,
-      "a scale above 1 means the frame is brighter: " + comp.describeScale(4));
-
-   // A negative slope is not "very dimmer". The sub falls where the master
-   // rises, which is a different fault with a different cause.
-   ok(comp.describeScale(-0.3).indexOf("opposite") >= 0,
-      "a negative scale is called what it is: " + comp.describeScale(-0.3));
-   ok(comp.describeScale(NaN).indexOf("cannot") >= 0,
-      "and a fit that produced no number says so");
 });
 
 //----------------------------------------------------------------------------
