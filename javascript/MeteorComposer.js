@@ -1059,7 +1059,7 @@ var CandidateDetailControl = class extends Frame {
 //============================================================================
 
 var SplitterHandle = class extends Control {
-   constructor(parent, onDragged) {
+   constructor(parent, onDragged, onReleased) {
       super(parent);
 
       this.setFixedWidth(SPLITTER_WIDTH);
@@ -1107,8 +1107,15 @@ var SplitterHandle = class extends Control {
          }
       };
 
+      // Release, not every move. Persisting a width on each mouse-move event
+      // would write to the settings store dozens of times per drag for a value
+      // that only matters once the operator lets go.
       this.onMouseRelease = function (x, y, button, buttonState, modifiers) {
+         var wasDragging = self.dragging;
          self.dragging = false;
+         if (wasDragging && onReleased) {
+            onReleased();
+         }
       };
    }
 };
@@ -1441,6 +1448,11 @@ var MeteorComposerDialog = class extends Dialog {
       // time. "edges" with every number at zero excludes nothing, which is what
       // an untouched dialog has to mean: the mask must not be able to change a
       // result by being present.
+      // Raised until restoreSettings() finishes. Persisting the mask is driven
+      // from refreshMask(), which runs while the controls are being built, and
+      // at that point the model holds defaults rather than anything the
+      // operator chose.
+      this._restoringSettings = true;
       this.maskMode = "edges";
       this.maskEdges = makeEdgeSpec();
       this.maskFilePath = "";
@@ -1497,11 +1509,15 @@ var MeteorComposerDialog = class extends Dialog {
 
       this.listSplitter = new SplitterHandle(this, function (delta) {
          self.setListWidth(self.listWidth + delta);
+      }, function () {
+         self.saveViewSettings();
       });
       // Dragging the right-hand handle rightwards should shrink the detail
       // pane, hence the inverted sign.
       this.detailSplitter = new SplitterHandle(this, function (delta) {
          self.setDetailWidth(self.detailWidth - delta);
+      }, function () {
+         self.saveViewSettings();
       });
 
       // The toolbar spans both previews, so the two panes and the handle
@@ -2460,6 +2476,7 @@ var MeteorComposerDialog = class extends Dialog {
       this.preview.setRotation(degrees);
       this.preview.centreOn(this.preview.selectedIndex);
       this.refreshFrameLabel();
+      this.saveViewSettings();
    }
 
    // Changing the stretch means re-reading and re-rendering the frame on
@@ -2474,6 +2491,7 @@ var MeteorComposerDialog = class extends Dialog {
       // left where the operator put it rather than being forced off, so that
       // returning to Linked or Unlinked restores their own choice.
       this.lockSTFCheck.enabled = stfPlan(mode).lockable;
+      this.saveViewSettings();
       if (this.session !== null) {
          this.showCurrentFrame();
       }
@@ -2902,6 +2920,21 @@ var MeteorComposerDialog = class extends Dialog {
       this.maskReadout.text = "Excluded: " + (fraction * 100).toFixed(1)
                             + "% of the frame";
       this.preview.setMask(haveFrame ? maskOverlayBitmap(mask, fw, fh) : null);
+      this.persistMask();
+   }
+
+   // Every edit to the mask - a depth, a tilt, the CCW box, the radio pair, the
+   // file, the turn - ends up in refreshMask(). Persisting from there rather
+   // than from each handler means a new control cannot be added and forgotten,
+   // which is the same reason the selected row is read through one accessor.
+   //
+   // Restoring is the one caller that must not write: it would log a save for a
+   // value it just read, and it runs before the operator has done anything.
+   persistMask() {
+      if (this._restoringSettings) {
+         return;
+      }
+      this.saveMaskSetting();
    }
 
    // Recorded in the detection results, so that a results file carries the mask
@@ -4228,6 +4261,19 @@ var MeteorComposerDialog = class extends Dialog {
    }
 
    restoreSettings() {
+      try {
+         this.restoreSettingsInner();
+      } finally {
+         // Construction and restore are both "not the operator". The flag is
+         // raised in the constructor, before any control exists, and comes down
+         // here - not at the start of this method. Building the mask controls
+         // calls refreshMask(), and with the flag down that would have written
+         // an empty mask over the stored one before this method got to read it.
+         this._restoringSettings = false;
+      }
+   }
+
+   restoreSettingsInner() {
       var dir = Settings.read(SETTINGS_KEY + "/registeredDir", DataType.String);
       if (dir !== null && dir.length > 0) {
          this.registeredDir = dir;
@@ -4290,27 +4336,48 @@ var MeteorComposerDialog = class extends Dialog {
       this.maskSourceChanged();
    }
 
+   // Persist now, not at closing time.
+   //
+   // Everything here used to be written once, from main(), after execute()
+   // returned. An operator set a tilt back to zero, closed, reopened and found
+   // the old value. The store held the old value, and the three settings it did
+   // hold - list 220, detail 510, tilt 37 - were exactly the set left by an
+   // earlier session, which is what a save that never ran looks like. Whatever
+   // skipped it (an exception out of execute(), quitting the application rather
+   // than the dialog), betting the operator's settings on one exit path was the
+   // mistake.
+   //
+   // This project already made the same call for verdicts, which are written
+   // after every keystroke so that nothing is lost by forgetting to save. There
+   // was no reason for the mask and the view settings to be treated as less
+   // durable than that. Settings.write() is cheap, and these change at human
+   // speed.
+   //
+   // saveSettings() stays, called from main() as before, as a backstop for
+   // anything that changed without going through a setter.
    saveSettings() {
+      this.saveViewSettings();
+      this.saveMaskSetting();
       Settings.write(SETTINGS_KEY + "/registeredDir", DataType.String,
                      this.registeredDir);
       Settings.write(SETTINGS_KEY + "/outputDir", DataType.String, this.outputDir);
+   }
+
+   saveViewSettings() {
       Settings.write(SETTINGS_KEY + "/listWidth", DataType.Int32, this.listWidth);
       Settings.write(SETTINGS_KEY + "/detailWidth", DataType.Int32, this.detailWidth);
       Settings.write(SETTINGS_KEY + "/rotation", DataType.Int32,
                      normalizeRotation(this.preview.rotation));
       Settings.write(SETTINGS_KEY + "/stfMode", DataType.String,
                      this.cache.stfMode);
+   }
+
+   saveMaskSetting() {
       var maskJSON = JSON.stringify(this.maskSpec());
       Settings.write(SETTINGS_KEY + "/mask", DataType.String, maskJSON);
-
-      // Said out loud. An operator reported setting a tilt back to zero,
-      // closing, and finding the old value again; the store held the old value,
-      // so the model held it too at this point - but nothing in the log said
-      // what was written, which left the question open. Now it does.
-      console.writeln("<end><cbr>settings saved: stf " + this.cache.stfMode
-                      + ", list " + this.listWidth
-                      + ", detail " + this.detailWidth
-                      + ", mask " + maskJSON);
+      // Said out loud, at the moment it happens. The question "was it saved?"
+      // is then answered by the log the operator already keeps.
+      console.writeln("<end><cbr>mask saved: " + maskJSON);
    }
 
    updateEnabled() {
