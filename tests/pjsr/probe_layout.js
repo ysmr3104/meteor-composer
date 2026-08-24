@@ -589,5 +589,109 @@ try {
    say("  ERROR: " + e);
 }
 
+//----------------------------------------------------------------------------
+// 7. How wide is an unconstrained ComboBox, and does the real toolbar fit?
+//
+// Stage 6 called adjustToContents() on the ComboBox before measuring. The
+// dialog does not. If an unconstrained ComboBox is much wider than its items
+// need, that alone would explain a toolbar the operator reports as overlapping
+// at the initial window size - which is worse than clipping.
+//
+// The width the preview pane actually gets at the minimum window size:
+//   1180 dialog - 16 margin - 380 list - 7 - 280 detail - 7 = 490
+//----------------------------------------------------------------------------
+
+say("");
+say("7. The real toolbar at the width the preview pane actually gets");
+say("");
+
+try {
+   var hc = new Control;
+   var rowc = new HorizontalSizer;
+   var cbBare = new ComboBox(hc);
+   cbBare.addItem("None");
+   cbBare.addItem("Linked");
+   cbBare.addItem("Unlinked");
+   rowc.add(cbBare);
+   var cbFit = new ComboBox(hc);
+   cbFit.addItem("None");
+   cbFit.addItem("Linked");
+   cbFit.addItem("Unlinked");
+   cbFit.adjustToContents();
+   rowc.add(cbFit);
+   hc.sizer = rowc;
+   hc.adjustToContents();
+   hc.ensureLayoutUpdated();
+   say("  ComboBox bare               " + cbBare.width
+       + "   minWidth " + cbBare.minWidth);
+   say("  ComboBox adjustToContents   " + cbFit.width
+       + "   minWidth " + cbFit.minWidth);
+   say("  its widest item needs       " + hc.font.width("Unlinked"));
+   say("");
+
+   // The toolbar as the dialog builds it, laid out at 490 and at 420.
+   var widths = [490, 420];
+   for (var w = 0; w < widths.length; ++w) {
+      var h = new Control;
+      var row = new HorizontalSizer;
+      row.spacing = 4;
+      var labels = ["Fit", "1:1", "+", "-", "\u21b6", "\u21b7"];
+      var widest = 0;
+      var i;
+      for (i = 0; i < labels.length; ++i) {
+         widest = Math.max(widest, h.font.width(labels[i]));
+      }
+      var tbs = [];
+      for (i = 0; i < labels.length; ++i) {
+         var tb = new ToolButton(h);
+         tb.text = labels[i];
+         tb.setFixedWidth(widest + 16);
+         tbs.push(tb);
+         row.add(tb);
+         if (i === 3) {
+            row.addSpacing(8);
+         }
+      }
+      row.addSpacing(10);
+      var stfLabel = new Label(h);
+      stfLabel.text = "STF:";
+      row.add(stfLabel);
+      var combo = new ComboBox(h);
+      combo.addItem("None");
+      combo.addItem("Linked");
+      combo.addItem("Unlinked");
+      row.add(combo);
+      row.addSpacing(10);
+      var lock = new CheckBox(h);
+      lock.text = "Lock stretch";
+      lock.minWidth = h.font.width(lock.text) + 20;
+      row.add(lock);
+      row.addSpacing(10);
+      var fl = new Label(h);
+      fl.text = "pct-2026-08-12_005232_ILCE-7M3_DSC04904_d_r.xisf   6024x4024";
+      row.add(fl, 100);
+      h.sizer = row;
+      h.adjustToContents();
+      var wants = h.width;
+      h.setFixedWidth(widths[w]);
+      h.ensureLayoutUpdated();
+
+      var fixed = 6 * (widest + 16) + stfLabel.width + combo.width + lock.width;
+      say("  at " + widths[w] + ": wants " + wants
+          + "   buttons " + (6 * (widest + 16))
+          + "   STF label " + stfLabel.width
+          + "   combo " + combo.width
+          + "   lock " + lock.width
+          + "   frame label " + fl.width);
+      say("        fixed parts total " + fixed + " + spacing 46 = "
+          + (fixed + 46)
+          + (fixed + 46 > widths[w] ? "   OVER by " + (fixed + 46 - widths[w])
+                                    : "   fits, with "
+                                      + (widths[w] - fixed - 46) + " for the name"));
+   }
+} catch (e) {
+   say("  ERROR: " + e);
+}
+
 say("");
 say("written to " + OUT);
