@@ -52,6 +52,14 @@
 // cut off, and the operator pans anyway.
 #define FOLLOW_MARGIN 24
 
+// Pane geometry. The splitter handle sets its own fixed width to this, and the
+// dialog's sizer uses this margin; paneBudget() has to agree with both, so they
+// are named rather than repeated as literals.
+#define SPLITTER_WIDTH 7
+#define DIALOG_MARGIN 8
+#define LIST_MIN_WIDTH 220
+#define DETAIL_MIN_WIDTH 180
+
 // Written beside the detection results after every verdict, so that closing
 // the dialog - or losing it - never costs the screening work.
 #define AUTOSAVE_NAME "meteor_session.json"
@@ -1054,7 +1062,7 @@ var SplitterHandle = class extends Control {
    constructor(parent, onDragged) {
       super(parent);
 
-      this.setFixedWidth(7);
+      this.setFixedWidth(SPLITTER_WIDTH);
       this.cursor = new Cursor(StdCursor.HorizontalSize);
       this.toolTip = "<p>Drag to resize the panes.</p>";
 
@@ -1519,7 +1527,7 @@ var MeteorComposerDialog = class extends Dialog {
       split.add(this.viewPanel, 100);
 
       this.sizer = new VerticalSizer;
-      this.sizer.margin = 8;
+      this.sizer.margin = DIALOG_MARGIN;
       this.sizer.spacing = 6;
       this.sizer.add(this.sourceGroup);
       this.sizer.add(split, 100);
@@ -1527,6 +1535,12 @@ var MeteorComposerDialog = class extends Dialog {
       this.sizer.add(this.buttonSizer);
 
       this.setMinSize(1180, 760);
+
+      // Narrowing the window has to pull the fixed panes back in, or the row
+      // overflows off the edge with no scrollbar to recover it.
+      this.onResize = function () {
+         self.reclampPanes();
+      };
 
       // The dialog, the list and the preview all get the same handler:
       // whichever has focus, the judging keys have to work.
@@ -2381,14 +2395,54 @@ var MeteorComposerDialog = class extends Dialog {
       this.detailSizer.add(this.detail, 100);
    }
 
+   // What the two fixed-width panes may share between them.
+   //
+   // The blanket cap of 900 each that used to be here ignored the window. At
+   // the minimum size of 1180 the row has 1164 to spend, and the list alone
+   // wants 380, so:
+   //
+   //   380 list + 7 handle + 420 preview minimum + 7 handle = 814
+   //   leaving 350 for the detail pane, not 900
+   //
+   // Dragging the handle past that asked for 1714 in a 1164 row. A PJSR dialog
+   // has no scrollbar, so the excess does not scroll - it goes off the edge,
+   // and the operator sees the right-hand pane's contents slide out of view
+   // with nothing to bring them back. Reported as "the detection box
+   // disappeared", which is what it looks like from the outside.
+   //
+   // The preview keeps its minimum rather than sharing the shortfall: it is
+   // the pane the judgement is actually made in.
+   paneBudget() {
+      var usable = this.width - 2 * DIALOG_MARGIN
+                 - 2 * SPLITTER_WIDTH - this.preview.minWidth;
+      return Math.max(0, usable);
+   }
+
    setListWidth(width) {
-      this.listWidth = Math.max(220, Math.min(900, Math.round(width)));
+      // The floor wins over the budget. A window too small for both floors is
+      // prevented by setMinSize, but a floor that gives way would let a pane
+      // vanish, and a pane of zero width cannot be dragged back.
+      var room = Math.max(LIST_MIN_WIDTH, this.paneBudget() - this.detailWidth);
+      this.listWidth = Math.max(LIST_MIN_WIDTH,
+                                Math.min(room, Math.round(width)));
       this.listPanel.setFixedWidth(this.listWidth);
    }
 
    setDetailWidth(width) {
-      this.detailWidth = Math.max(180, Math.min(900, Math.round(width)));
+      var room = Math.max(DETAIL_MIN_WIDTH, this.paneBudget() - this.listWidth);
+      this.detailWidth = Math.max(DETAIL_MIN_WIDTH,
+                                  Math.min(room, Math.round(width)));
       this.detailPanel.setFixedWidth(this.detailWidth);
+   }
+
+   // Shrinking the window has to pull the panes back in. Without this, a width
+   // that was legal in a wide window stays put when the window narrows, and
+   // the row overflows again - the same symptom by a different route. Also
+   // covers the widths restored from Settings, which are applied before the
+   // window has its real size.
+   reclampPanes() {
+      this.setListWidth(this.listWidth);
+      this.setDetailWidth(this.detailWidth);
    }
 
    setRotation(degrees) {
