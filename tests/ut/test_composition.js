@@ -77,6 +77,18 @@ function makeSub(master, scale, offset, noise, seed) {
 
 // Cut a frame-sized mask down to one rectangle. The composite builds its masks
 // per trail and rectangle-local, so that is the shape addTrailLight takes.
+// Every nth pixel in each direction, with nothing excluded. Used to show what
+// the fit would give if it kept the pixels that hold no data.
+function strideSample(data, width, height, stride) {
+   var out = [];
+   for (var y = 0; y < height; y += stride) {
+      for (var x = 0; x < width; x += stride) {
+         out.push(data[y * width + x]);
+      }
+   }
+   return out;
+}
+
 function localMask(mask, rect, width) {
    var rw = rect.right - rect.left + 1;
    var rh = rect.bottom - rect.top + 1;
@@ -378,9 +390,10 @@ suite("composeFrame writes nothing when a fit is implausible", function () {
                                   W, H, [trail], [rect], added, maskOut, null);
 
    ok(!result.written, "the frame was refused");
-   ok(result.reason !== null && result.reason.indexOf("scale") >= 0,
-      "and the reason names the scale: " + result.reason);
-   ok(result.code === "scale", "with a code the caller can branch on");
+   ok(result.reason !== null && result.reason.indexOf("0.020") >= 0,
+      "and the reason names the number measured: " + result.reason);
+   ok(result.code === "structure" || result.code === "level",
+      "with a code the caller can branch on, got " + result.code);
    ok(result.channel === 2, "on the channel that failed");
    ok(result.warning === null,
       "and nothing is reported as forced, because nothing was forced");
@@ -416,7 +429,7 @@ suite("composeFrame writes nothing when a fit is implausible", function () {
    ok(forcedResult.written, "acceptAnyFit composites the same frame");
    ok(forcedResult.warning !== null && forcedResult.warning === result.reason,
       "and reports the very verdict that would have refused it");
-   ok(forcedResult.warningCode === "scale", "with the same code");
+   ok(forcedResult.warningCode === result.code, "with the same code");
    ok(forcedResult.warningChannel === 2, "and the same channel");
 
    var forcedTouched = 0;
@@ -578,7 +591,8 @@ suite("fitIsPlausible", function () {
    // a result that looks plausible and is wrong.
    var wild = comp.fitIsPlausible({ scale: 47, offset: 0, samples: 5000 }, null);
    ok(!wild.ok, "an absurd scale is rejected");
-   ok(wild.code === "scale", "under a code, not under its wording");
+   ok(wild.code === "level" || wild.code === "structure",
+      "under a code, not under its wording");
    ok(wild.reason.indexOf("47.000") >= 0,
       "and the number itself is still there for a bug report: " + wild.reason);
 
@@ -602,25 +616,157 @@ suite("fitIsPlausible", function () {
       "acceptAnyFit does not change the verdict itself");
 });
 
-suite("describeScale", function () {
-   // The direction. The fit is sub ~= scale * master + offset, so a scale
-   // below 1 means the FRAME is the dimmer of the two. Saying that backwards
-   // would send someone to the wrong end of their data, and the wording is
-   // the only thing most people will ever read, so it is pinned here.
-   ok(comp.describeScale(0.1).indexOf("dimmer") >= 0,
-      "a scale below 1 means the frame is dimmer: " + comp.describeScale(0.1));
-   ok(comp.describeScale(0.1).indexOf("10.0") >= 0,
-      "by the reciprocal of the scale, not by the scale");
-   ok(comp.describeScale(4).indexOf("brighter") >= 0
-      && comp.describeScale(4).indexOf("4.0") >= 0,
-      "a scale above 1 means the frame is brighter: " + comp.describeScale(4));
+suite("a rejection says which of the three things went wrong", function () {
+   // Every case here is a measurement from one real night, so the wording is
+   // pinned against data rather than against an idea of what could happen.
+   // The numbers are in the comment above fitOnGrid.
 
-   // A negative slope is not "very dimmer". The sub falls where the master
-   // rises, which is a different fault with a different cause.
-   ok(comp.describeScale(-0.3).indexOf("opposite") >= 0,
-      "a negative scale is called what it is: " + comp.describeScale(-0.3));
-   ok(comp.describeScale(NaN).indexOf("cannot") >= 0,
-      "and a fit that produced no number says so");
+   // DSC04908 after excluding its missing wedge: 38.7% of the frame is not
+   // there. That is the sentence the operator needs, and it is the one the old
+   // message did not contain - it asked whether the master was right instead.
+   var missing = comp.fitIsPlausible(
+      { scale: 0.1657, levelRatio: 0.9994, samples: 303295,
+        noDataFraction: 0.3873 }, null);
+   ok(!missing.ok, "a frame missing a third of itself is refused");
+   ok(missing.code === "nodata", "under its own code");
+   ok(missing.reason.indexOf("38.7%") >= 0,
+      "and the fraction is in the message: " + missing.reason);
+   // The report that started this said "is this the right master?" and the
+   // reply was "what is that?". A line that ends in a question the operator
+   // cannot answer is not a diagnosis, so none of them may ask one: the
+   // question belongs in the dialog, which offers the three answers with it.
+   var cases = [
+      missing,
+      comp.fitIsPlausible({ scale: 0.097, levelRatio: 0.974, samples: 495075,
+                            noDataFraction: 0.004 }, null),
+      comp.fitIsPlausible({ scale: 0.10, levelRatio: 0.11, samples: 495075,
+                            noDataFraction: 0.004 }, null),
+      comp.fitIsPlausible({ scale: 1.2, levelRatio: 1.0, samples: 10,
+                            noDataFraction: 0 }, null)
+   ];
+   var asking = [];
+   for (var q = 0; q < cases.length; ++q) {
+      if (cases[q].reason.indexOf("?") >= 0) {
+         asking.push(cases[q].code);
+      }
+   }
+   ok(asking.length === 0,
+      "no rejection asks a question instead of stating what it measured"
+      + (asking.length > 0 ? " (" + asking.join(", ") + ")" : ""));
+
+   // The forum case: an undebayered master against debayered frames. The
+   // brightness matches and the detail does not, which is a different fault
+   // with different causes, so it must not be called a brightness difference.
+   var structure = comp.fitIsPlausible(
+      { scale: 0.097, levelRatio: 0.974, samples: 495075,
+        noDataFraction: 0.004 }, null);
+   ok(structure.code === "structure",
+      "detail that does not line up is its own case, got " + structure.code);
+   ok(structure.reason.indexOf("dimmer") < 0,
+      "and it is NOT called dimmer - measured median ratio was 0.974: "
+      + structure.reason);
+
+   // A frame that really is dim: both numbers agree, so the brightness IS the
+   // explanation and saying so is right.
+   var dim = comp.fitIsPlausible(
+      { scale: 0.10, levelRatio: 0.11, samples: 495075,
+        noDataFraction: 0.004 }, null);
+   ok(dim.code === "level", "agreement means the level explains it");
+   ok(dim.reason.indexOf("dimmer") >= 0, "and here dimmer is the right word");
+
+   // The frames that were accepted on that night, so the check is not simply
+   // strict: slope 0.99 to 1.25 against a level ratio of 0.99 to 1.02.
+   ok(comp.fitIsPlausible({ scale: 1.0395, levelRatio: 1.0139, samples: 492406,
+                            noDataFraction: 0.0042 }, null).ok,
+      "a real accepted frame still passes");
+   ok(comp.fitIsPlausible({ scale: 1.2422, levelRatio: 0.9985, samples: 494256,
+                            noDataFraction: 0.0024 }, null).ok,
+      "including the widest slope of the night");
+
+   // The threshold between them, stated as a property rather than a number:
+   // the widest disagreement among frames that composited correctly must stay
+   // inside it, and the broken ones' must not.
+   ok(comp.levelExplainsScale(1.2422, 0.9985),
+      "the widest correct disagreement counts as agreement");
+   ok(!comp.levelExplainsScale(0.3103, 0.9995),
+      "and 3.2 does not");
+   ok(!comp.levelExplainsScale(0.097, 0.974),
+      "nor does 10");
+
+   // A slope INSIDE the accepted range is not enough on its own. DSC04904
+   // measured 0.310 against a sky level of 0.9995 - inside 0.2 to 5.0, and
+   // yet a fit that paints stars: the offset absorbs the mean, so where the
+   // master reads 0.5 the fit predicts 0.161 against a true 0.525 and leaves
+   // +0.36 for the mask to lay down.
+   var inRangeButWrong = comp.fitIsPlausible(
+      { scale: 0.3103, levelRatio: 0.9995, samples: 303138,
+        noDataFraction: 0.0 }, null);
+   ok(!inRangeButWrong.ok,
+      "a slope inside the range is still refused when the level disagrees");
+   ok(inRangeButWrong.code === "structure",
+      "and it is the structure case, got " + inRangeButWrong.code);
+
+   // An unmeasurable level ratio must not reject anything. It is a missing
+   // measurement, not a failed one, and the absolute range still applies.
+   ok(comp.fitIsPlausible({ scale: 0.31, levelRatio: NaN, samples: 495075,
+                            noDataFraction: 0.004 }, null).ok,
+      "no level ratio means the range decides alone");
+   ok(!comp.fitIsPlausible({ scale: 0.01, levelRatio: NaN, samples: 495075,
+                             noDataFraction: 0.004 }, null).ok,
+      "and the range still rejects what it always rejected");
+
+   // A frame that is genuinely dim in the same proportion is trustworthy at
+   // whatever slope it takes: the two numbers agree, so the fit is real.
+   ok(comp.fitIsPlausible({ scale: 0.30, levelRatio: 0.31, samples: 495075,
+                            noDataFraction: 0.004 }, null).ok,
+      "agreement is enough for a dim frame inside the range");
+});
+
+suite("fitOnGrid excludes pixels that hold no data", function () {
+   // The bug this fixes: a registered frame has a wedge where rotation moved
+   // it off the reference, and it is zero there while the master has sky. Each
+   // such pixel enters the fit as (sky, 0) and drags the slope down in
+   // proportion to how much of the frame is missing. It cost a real frame its
+   // place in a composite and biased every other frame's fit low.
+   var W = 200, H = 150;
+   var n = W * H;
+   var master = makeMaster(n, 21);
+   var sub = makeSub(master, 1.1, 0.002, 0, 23);
+
+   var clean = comp.fitOnGrid(master, sub, new Float32Array(n), W, H, null);
+   close(clean.scale, 1.1, 1e-3, "with nothing missing the slope is recovered");
+   close(clean.noDataFraction, 0, 1e-9, "and nothing is reported missing");
+
+   // Blank the left 40% of the frame in the sub only, as registration does.
+   var cut = Math.floor(W * 0.4);
+   for (var y = 0; y < H; ++y) {
+      for (var x = 0; x < cut; ++x) {
+         sub[y * W + x] = 0;
+      }
+   }
+
+   var withHole = comp.fitOnGrid(master, sub, new Float32Array(n), W, H, null);
+   close(withHole.scale, 1.1, 1e-2,
+         "the slope survives 40% of the frame being missing");
+   ok(withHole.noDataFraction > 0.35 && withHole.noDataFraction < 0.45,
+      "and the missing fraction is reported: " + withHole.noDataFraction);
+   ok(withHole.samples < clean.samples,
+      "on fewer samples, because the missing ones were dropped");
+
+   // The level ratio has to be measured on the surviving pixels too. On real
+   // data the wedge dragged it from 1.00 down to 0.61, which read as "this
+   // frame is dim" when the frame was not dim at all.
+   close(withHole.levelRatio, clean.levelRatio, 2e-2,
+         "and the level ratio is unaffected by the hole");
+
+   // Without the exclusion the slope would be wrong by roughly the missing
+   // fraction. Asserted so that removing the guard fails a test rather than
+   // quietly changing every composite.
+   var biased = comp.linearFit(strideSample(master, W, H, 7),
+                               strideSample(sub, W, H, 7));
+   ok(biased.scale < 0.8,
+      "keeping them would put the slope at " + biased.scale.toFixed(3)
+      + " instead of 1.1");
 });
 
 //----------------------------------------------------------------------------

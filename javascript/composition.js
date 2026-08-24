@@ -122,43 +122,102 @@ function linearFit(source, reference) {
       sumXY += x * y;
    }
    if (n === 0) {
-      return { scale: 1, offset: 0, samples: 0 };
+      return { scale: 1, offset: 0, samples: 0,
+               sourceMean: 0, referenceMean: 0, levelRatio: NaN };
    }
    var meanX = sumX / n;
    var meanY = sumY / n;
+
+   // The means are already in hand, and their ratio is the other half of the
+   // diagnosis.
+   //
+   // The slope alone cannot tell "this frame is dimmer" from "this frame does
+   // not show the same sky". Both come out as a slope below 1, and they call
+   // for opposite reactions. Measured on real data: the frame the composite
+   // refused sat at 0.97 of the master's sky level with a slope of 0.097 - a
+   // hundredfold disagreement between the two numbers - while every frame it
+   // accepted had slope and level ratio within 30% of each other.
+   //
+   // So the pair of numbers is the diagnosis and the slope on its own is not.
+   // A message built from the slope alone would have said "ten times dimmer"
+   // about a frame that was the same brightness as the master.
+   var levelRatio = meanX > 0 ? meanY / meanX : NaN;
+
    var varianceX = sumXX / n - meanX * meanX;
    if (!(varianceX > 0)) {
       // A constant source carries no slope information. Matching the means is
       // the most that can honestly be said.
-      return { scale: 1, offset: meanY - meanX, samples: n };
+      return { scale: 1, offset: meanY - meanX, samples: n,
+               sourceMean: meanX, referenceMean: meanY, levelRatio: levelRatio };
    }
    var covariance = sumXY / n - meanX * meanY;
    var scale = covariance / varianceX;
-   return { scale: scale, offset: meanY - scale * meanX, samples: n };
+   return { scale: scale, offset: meanY - scale * meanX, samples: n,
+            sourceMean: meanX, referenceMean: meanY, levelRatio: levelRatio };
 }
 
 // Fit the master to the sub over the whole frame, on a strided grid, skipping
-// everything the masks cover.
+// everything the masks cover and everywhere either side has no data.
 //
 // The masks have to be skipped: a fit that included the trail would partly
 // absorb the meteor, and the light that is then added - which is what is left
 // over - would come out smaller than it is.
+//
+// NO DATA has to be skipped for a different and larger reason.
+//
+// A registered frame carries a wedge where rotation and shift moved it off the
+// reference, and those pixels are zero. The master is an integration of the
+// whole night, so it has sky there. Every such pixel enters the fit as
+// (master = sky, sub = 0) and pulls the slope towards zero - not as noise, but
+// as a systematic bias proportional to how much of the frame is missing.
+//
+// Measured on one night, per frame, fraction of pixels with no data and the
+// slope with and without them:
+//
+//   DSC04904   38.76%   0.176 -> 0.310     (was refused, now accepted)
+//   DSC04908   38.73%   0.097 -> 0.166     (still refused, and it should be)
+//   DSC04944    0.42%   1.052 -> 1.040
+//   DSC04972    0.39%   1.010 -> 0.999
+//   DSC05542    0.24%   1.153 -> 1.147
+//
+// So this was never only a message problem. The one frame the composite
+// refused was refused because 39% of it was missing, and the operator was
+// asked whether the master was right. Worse, the frames it ACCEPTED had their
+// slope biased low by their own missing fraction, and a slope that is 1.2% low
+// leaves a residual of the order of the master's own noise - painted into the
+// shape of the mask.
+//
+// Zero is the test, not a tolerance: after calibration the sky sits around
+// 8.5e-3, so a pixel at or below zero is missing data rather than dark sky.
 function fitOnGrid(master, sub, mask, width, height, options) {
    var opt = mergeComposeOptions(options);
    var stride = opt.fitStride > 0 ? Math.floor(opt.fitStride) : 1;
    var x = [], y = [];
+   var visited = 0, masked = 0, missing = 0;
    for (var iy = 0; iy < height; iy += stride) {
       var row = iy * width;
       for (var ix = 0; ix < width; ix += stride) {
          var i = row + ix;
+         ++visited;
          if (mask[i] > 0) {
+            ++masked;
+            continue;
+         }
+         if (!(master[i] > 0) || !(sub[i] > 0)) {
+            ++missing;
             continue;
          }
          x.push(master[i]);
          y.push(sub[i]);
       }
    }
-   return linearFit(x, y);
+   var fit = linearFit(x, y);
+   // Reported, not just acted on: "39% of this frame has no data" is the one
+   // sentence that explains the rejection to whoever has to fix it.
+   fit.visited = visited;
+   fit.maskedFraction = visited > 0 ? masked / visited : 0;
+   fit.noDataFraction = visited > 0 ? missing / visited : 0;
+   return fit;
 }
 
 // The sky level the fit failed to match, measured just outside one trail's
@@ -184,6 +243,14 @@ function localBackground(master, sub, fit, mask, width, height, rect, options) {
       for (var x = left; x <= right; x += stride) {
          var i = row + x;
          if (mask[i] > 0) {
+            continue;
+         }
+         // No data is not a sky level. A ring that reaches into the missing
+         // wedge of a registered frame would read the residual there - which
+         // is minus the whole sky - and the median is only robust while the
+         // wedge is the minority of the ring. Excluded for the same reason the
+         // fit excludes it, so that the two agree about which pixels exist.
+         if (!(master[i] > 0) || !(sub[i] > 0)) {
             continue;
          }
          var v = sub[i] - (fit.scale * master[i] + fit.offset);
@@ -409,37 +476,75 @@ function applyAdded(master, added) {
    return out;
 }
 
-// A fit scale, said in a way an operator can act on.
+// How much of the master's brightness a frame carries, said as a ratio.
 //
-// "fit scale 0.097" is a number out of the algorithm. The same fact as a ratio
-// - the frame is ten times dimmer than the master - points straight at the
-// cause, which is why the message leads with the ratio and keeps the scale in
-// brackets behind it.
-//
-// The fit is sub ~= scale * master + offset, so the scale is the sub's
-// brightness measured in masters: below 1 the frame is the dimmer of the two.
-// Getting that backwards would send someone looking at the wrong end of their
-// data, so the direction is asserted in the tests.
-function describeScale(scale) {
-   if (!isFinite(scale)) {
-      return "cannot be compared with the master at all";
+// Used for the level half of the diagnosis. The direction matters: the fit is
+// sub ~= scale * master + offset and the level ratio is the sub's mean in
+// masters, so below 1 the FRAME is the dimmer of the two in both. Getting that
+// backwards would send someone to the wrong end of their data, so it is
+// asserted in the tests.
+function describeRatio(ratio) {
+   if (!isFinite(ratio)) {
+      return "cannot be compared with the master";
    }
-   if (scale <= 0) {
+   if (ratio <= 0) {
       return "runs opposite to the master - brighter where the master is darker";
    }
-   if (scale >= 1) {
-      return "is " + scale.toFixed(1) + " times brighter than the master";
+   if (ratio >= 1) {
+      return "is " + ratio.toFixed(1) + " times brighter than the master";
    }
-   return "is " + (1 / scale).toFixed(1) + " times dimmer than the master";
+   return "is " + (1 / ratio).toFixed(1) + " times dimmer than the master";
+}
+
+// Whether the slope and the level ratio are telling the same story.
+//
+// They are two measurements of "how much of the master is in this frame", one
+// from the structure and one from the brightness. When they agree, the frame
+// really is dimmer or brighter and the cause is an exposure, an ISO or a
+// stretched master. When they disagree, the frame is at the master's
+// brightness but its detail does not follow it, and the cause is something
+// else entirely - one of the two not debayered, a registration that failed,
+// a trailed or clouded frame.
+//
+// The factor comes from the measurement, not from taste. On a real night the
+// frames that composited correctly ran slope 0.99 to 1.25 against a level
+// ratio of 0.99 to 1.02, so the widest honest disagreement observed was 1.25.
+// The frames that were broken disagreed by 3.2 and 6.0. Two sits an order of
+// magnitude clear of the first and well below the second, and only one night
+// has been measured, so it is set wide on purpose.
+//
+// A var, not a #define: this file has to run under Node for its tests, and the
+// PixInsight preprocessor is not there to expand anything.
+var LEVEL_AGREEMENT = 2.0;
+
+function levelExplainsScale(scale, levelRatio) {
+   if (!isFinite(scale) || !isFinite(levelRatio)
+       || scale <= 0 || levelRatio <= 0) {
+      return false;
+   }
+   var ratio = scale / levelRatio;
+   return ratio >= 1 / LEVEL_AGREEMENT && ratio <= LEVEL_AGREEMENT;
 }
 
 // Whether a fit looks trustworthy.
 //
-// A sub and a master of the same target through the same optics should differ
-// by roughly a constant factor near 1. A scale far from 1 means something else
-// is going on - a master from another session, another filter, a master that
-// has already been stretched - and compositing anyway paints whatever the fit
-// leaves behind into the shape of the mask.
+// Two questions, not one.
+//
+//   Is the slope in a range that could be a real exposure difference?
+//   Does the slope agree with the sky level ratio?
+//
+// The second is the one that matters and it was missing. A slope inside the
+// range is not enough: on real data a frame whose sky level matched the
+// master's exactly fitted at 0.31, and that pair paints stars. Work it
+// through - offset = mean - 0.31 * mean = 0.69 * mean, so at a star where the
+// master reads 0.5 the fit predicts 0.161 against a true 0.525, leaving a
+// residual of +0.36 for the mask to lay into the result. It would have looked
+// like a mask bug.
+//
+// When the two numbers agree, the frame really is dimmer or brighter and the
+// fit can be trusted at whatever value it takes. When they disagree, the frame
+// is at the master's brightness and its detail does not follow it, and no
+// slope is trustworthy.
 //
 // `code` names the failure so that a caller can explain the cause without
 // matching on the wording; `reason` is one line, because the caller lists it
@@ -449,6 +554,7 @@ function fitIsPlausible(fit, options) {
    var minScale = opt.minScale === undefined ? 0.2 : opt.minScale;
    var maxScale = opt.maxScale === undefined ? 5.0 : opt.maxScale;
    var minSamples = opt.minSamples === undefined ? 100 : opt.minSamples;
+   var minNoData = opt.minNoData === undefined ? 0.05 : opt.minNoData;
 
    if (fit.samples < minSamples) {
       return { ok: false, code: "samples",
@@ -456,14 +562,56 @@ function fitIsPlausible(fit, options) {
                      + "measure this frame against the master, and at least "
                      + minSamples + " are needed" };
    }
-   if (!(fit.scale >= minScale && fit.scale <= maxScale)) {
-      return { ok: false, code: "scale",
-               reason: "the frame " + describeScale(fit.scale)
-                     + " (fit scale " + fit.scale.toFixed(3)
-                     + "; the accepted range is " + minScale
-                     + " to " + maxScale + ")" };
+
+   // The level ratio is not always available - a master whose mean is zero
+   // has none - and an unavailable measurement must not reject anything. The
+   // absolute range carries the check on its own in that case.
+   var levelKnown = isFinite(fit.levelRatio) && fit.levelRatio > 0;
+   var agrees = !levelKnown || levelExplainsScale(fit.scale, fit.levelRatio);
+   var inRange = fit.scale >= minScale && fit.scale <= maxScale;
+
+   if (inRange && agrees) {
+      return { ok: true, code: null, reason: null };
    }
-   return { ok: true, code: null, reason: null };
+
+   // Same rejection, three different things to say about it, in the order of
+   // how actionable they are.
+   //
+   // Missing data first, because it is the one an operator can see and fix,
+   // and because it is what actually happened on the only real night measured.
+   // Normal frames of that night were missing 0.24% to 0.42% of their pixels
+   // and the two broken ones were missing 38.7%, so anything above a few per
+   // cent is the story rather than a detail.
+   var missing = fit.noDataFraction;
+   if (isFinite(missing) && missing >= minNoData) {
+      return { ok: false, code: "nodata",
+               reason: (100 * missing).toFixed(1) + "% of this frame has no "
+                     + "data - registration moved it that far off the "
+                     + "reference - and what overlaps fits at "
+                     + fit.scale.toFixed(3)
+                     + " where about 1 is expected" };
+   }
+
+   if (!agrees) {
+      return { ok: false, code: "structure",
+               reason: "the frame sits at " + describeLevel(fit.levelRatio)
+                     + " of the master's sky level, but only "
+                     + fit.scale.toFixed(3) + " of its detail lines up - the "
+                     + "two do not show the same sky" };
+   }
+
+   return { ok: false, code: "level",
+            reason: "the frame " + describeRatio(fit.scale)
+                  + " across the whole sky (fit scale "
+                  + fit.scale.toFixed(3) + ", sky level "
+                  + describeLevel(fit.levelRatio)
+                  + " of the master's; the accepted range is "
+                  + minScale + " to " + maxScale + ")" };
+}
+
+// The level ratio as a bare number, or a word when there is no number.
+function describeLevel(ratio) {
+   return isFinite(ratio) ? ratio.toFixed(3) : "an unmeasurable fraction";
 }
 
 // --- Utility ----------------------------------------------------------------
@@ -521,7 +669,9 @@ if (typeof module !== "undefined") {
       localBackground: localBackground,
       addTrailLight: addTrailLight,
       composeFrame: composeFrame,
-      describeScale: describeScale,
+      describeRatio: describeRatio,
+      describeLevel: describeLevel,
+      levelExplainsScale: levelExplainsScale,
       frameLight: frameLight,
       mergeMaskInto: mergeMaskInto,
       applyAdded: applyAdded,
