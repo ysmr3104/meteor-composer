@@ -78,7 +78,21 @@ var DEFAULT_COMPOSE_OPTIONS = {
 
    // Whether to remove the local sky level before adding. Off is the honest
    // way to reproduce the earlier behaviour when comparing.
-   removeLocalBackground: true
+   removeLocalBackground: true,
+
+   // Composite a frame even when its fit says it does not belong with this
+   // master.
+   //
+   // The check exists for a reason and this does not remove it: the frame is
+   // still checked, and what it found is still reported. What changes is only
+   // whether the answer stops the frame.
+   //
+   // It is here because the check is a guess about what is unreasonable, and a
+   // guess that is wrong for someone's data leaves them with an empty
+   // composite and one line of console output explaining it. Being able to
+   // force the run is what turns that into a picture they can look at and
+   // judge for themselves.
+   acceptAnyFit: false
 };
 
 // Fit `source` to `reference` as reference ~= scale * source + offset, by
@@ -292,23 +306,43 @@ function frameLight(masterChannels, subChannels, fits, backgrounds, rect, width)
 // written. A frame that does not match the master must leave no trace at all:
 // writing two channels and then rejecting the third would produce a colour
 // cast that looks like a bug in the mask.
+//
+// With `acceptAnyFit` the frame is composited even so, and the check becomes a
+// warning that travels back with the result. The verdict itself is unchanged -
+// the same thresholds, the same wording - because the caller has to be able to
+// say in its report WHICH frames it was told to force and why. Turning the
+// check off instead would make a forced run indistinguishable from a clean one.
 function composeFrame(masterChannels, subChannels, corridorMask, width, height,
                      trails, rects, added, maskOut, options) {
+   var opt = mergeComposeOptions(options);
    var channels = masterChannels.length;
    var fits = [];
+   var warning = null;
+   var warningCode = null;
+   var warningChannel = -1;
    var ch;
 
    for (ch = 0; ch < channels; ++ch) {
       fits.push(fitOnGrid(masterChannels[ch], subChannels[ch], corridorMask,
-                          width, height, options));
-      var check = fitIsPlausible(fits[ch], options);
+                          width, height, opt));
+      var check = fitIsPlausible(fits[ch], opt);
       if (!check.ok) {
-         return { written: false, fits: fits, reason: check.reason,
-                  channel: ch, trails: [] };
+         if (!opt.acceptAnyFit) {
+            return { written: false, fits: fits, reason: check.reason,
+                     code: check.code, channel: ch, trails: [],
+                     warning: null, warningCode: null, warningChannel: -1 };
+         }
+         // The first channel to complain is the one reported. They fail
+         // together when the cause is the master, and one line per frame is
+         // what the report has room for.
+         if (warning === null) {
+            warning = check.reason;
+            warningCode = check.code;
+            warningChannel = ch;
+         }
       }
    }
 
-   var opt = mergeComposeOptions(options);
    var geometry = trailMaskFunctions();
    var report = [];
 
@@ -344,7 +378,9 @@ function composeFrame(masterChannels, subChannels, corridorMask, width, height,
                     coverage: geometry.signalMaskCoverage(maskLocal, rect) });
    }
 
-   return { written: true, fits: fits, reason: null, channel: -1, trails: report };
+   return { written: true, fits: fits, reason: null, code: null, channel: -1,
+            trails: report, warning: warning, warningCode: warningCode,
+            warningChannel: warningChannel };
 }
 
 // Place a rect-local mask into the frame-sized accumulator, keeping the larger
@@ -373,13 +409,41 @@ function applyAdded(master, added) {
    return out;
 }
 
+// A fit scale, said in a way an operator can act on.
+//
+// "fit scale 0.097" is a number out of the algorithm. The same fact as a ratio
+// - the frame is ten times dimmer than the master - points straight at the
+// cause, which is why the message leads with the ratio and keeps the scale in
+// brackets behind it.
+//
+// The fit is sub ~= scale * master + offset, so the scale is the sub's
+// brightness measured in masters: below 1 the frame is the dimmer of the two.
+// Getting that backwards would send someone looking at the wrong end of their
+// data, so the direction is asserted in the tests.
+function describeScale(scale) {
+   if (!isFinite(scale)) {
+      return "cannot be compared with the master at all";
+   }
+   if (scale <= 0) {
+      return "runs opposite to the master - brighter where the master is darker";
+   }
+   if (scale >= 1) {
+      return "is " + scale.toFixed(1) + " times brighter than the master";
+   }
+   return "is " + (1 / scale).toFixed(1) + " times dimmer than the master";
+}
+
 // Whether a fit looks trustworthy.
 //
 // A sub and a master of the same target through the same optics should differ
-// by roughly a constant factor. A scale far from 1 means something else is
-// going on - the wrong master, a different filter, a frame from another
-// session - and compositing anyway would produce a result that looks
-// plausible and is wrong.
+// by roughly a constant factor near 1. A scale far from 1 means something else
+// is going on - a master from another session, another filter, a master that
+// has already been stretched - and compositing anyway paints whatever the fit
+// leaves behind into the shape of the mask.
+//
+// `code` names the failure so that a caller can explain the cause without
+// matching on the wording; `reason` is one line, because the caller lists it
+// per frame. Neither is a decision: see acceptAnyFit for that.
 function fitIsPlausible(fit, options) {
    var opt = options || {};
    var minScale = opt.minScale === undefined ? 0.2 : opt.minScale;
@@ -387,15 +451,19 @@ function fitIsPlausible(fit, options) {
    var minSamples = opt.minSamples === undefined ? 100 : opt.minSamples;
 
    if (fit.samples < minSamples) {
-      return { ok: false, reason: "only " + fit.samples + " samples outside the mask" };
+      return { ok: false, code: "samples",
+               reason: "only " + fit.samples + " pixels of sky were left to "
+                     + "measure this frame against the master, and at least "
+                     + minSamples + " are needed" };
    }
    if (!(fit.scale >= minScale && fit.scale <= maxScale)) {
-      return { ok: false,
-               reason: "fit scale " + fit.scale.toFixed(3)
-                     + " is outside " + minScale + " to " + maxScale
-                     + " - is this the right master?" };
+      return { ok: false, code: "scale",
+               reason: "the frame " + describeScale(fit.scale)
+                     + " (fit scale " + fit.scale.toFixed(3)
+                     + "; the accepted range is " + minScale
+                     + " to " + maxScale + ")" };
    }
-   return { ok: true, reason: null };
+   return { ok: true, code: null, reason: null };
 }
 
 // --- Utility ----------------------------------------------------------------
@@ -453,6 +521,7 @@ if (typeof module !== "undefined") {
       localBackground: localBackground,
       addTrailLight: addTrailLight,
       composeFrame: composeFrame,
+      describeScale: describeScale,
       frameLight: frameLight,
       mergeMaskInto: mergeMaskInto,
       applyAdded: applyAdded,

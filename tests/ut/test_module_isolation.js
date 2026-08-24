@@ -755,6 +755,57 @@ suite("stretch modes are only interpreted by stfPlan()", function () {
    }
 });
 
+suite("the mismatch policy is spelled one way", function () {
+   ok(fs.existsSync(MAIN), "MeteorComposer.js exists");
+   if (!fs.existsSync(MAIN)) {
+      return;
+   }
+   var source = fs.readFileSync(MAIN, "utf8");
+
+   ok(/mismatchDecision\s*\(/.test(source), "the decision is asked in one place");
+
+   // The policy travels as a string between the method that asks the operator
+   // and the loop that acts on it, so a typo is a silent behaviour change
+   // rather than an error: "forced" instead of "force" would quietly mean
+   // "never force", and nothing would say so. Every literal that is compared
+   // or assigned has to be one of these four.
+   var WORDS = ["ask", "cancel", "force", "skip"];
+   var lines = source.split("\n");
+   var seen = {};
+   var strays = [];
+   for (var i = 0; i < lines.length; ++i) {
+      var patterns = [
+         /(?:mismatchPolicy|\bdecision\b)\s*(?:===|!==|=)\s*"([^"]*)"/g,
+         /"([^"]*)"\s*(?:===|!==)\s*(?:this\.mismatchPolicy|decision)/g
+      ];
+      for (var pi = 0; pi < patterns.length; ++pi) {
+         var m;
+         while ((m = patterns[pi].exec(lines[i])) !== null) {
+            if (WORDS.indexOf(m[1]) >= 0) {
+               seen[m[1]] = true;
+            } else {
+               strays.push("line " + (i + 1) + ': "' + m[1] + '"');
+            }
+         }
+      }
+   }
+   ok(strays.length === 0,
+      "no other word is used as a policy"
+      + (strays.length > 0 ? ":\n        " + strays.join("\n        ") : ""));
+   for (var w = 0; w < WORDS.length; ++w) {
+      ok(seen[WORDS[w]] === true, 'the policy "' + WORDS[w] + '" is still used');
+   }
+
+   // Which way the unrecognised case falls. Compositing a frame that does not
+   // match the master produces a picture that looks plausible and is wrong, so
+   // that path must be reachable only by asking for it by name - never as the
+   // else of something else.
+   ok(/decision\s*!==\s*"force"/.test(source),
+      "anything that is not force leaves the frame out");
+   ok(!/decision\s*===\s*"force"/.test(source),
+      "and force is not the fall-through of a positive test");
+});
+
 console.log("\n============================================");
 console.log("passed: " + passed + "  failed: " + failed);
 if (failed > 0) {

@@ -4022,6 +4022,67 @@ var MeteorComposerDialog = class extends Dialog {
       return dir + "/meteor_composite.xisf";
    }
 
+   // What to do about a frame whose fit says it does not belong with this
+   // master: leave it out, composite it anyway, or stop.
+   //
+   // Asked at most once per run, and the answer covers every frame after it.
+   // A mismatch is a property of the pair, not of one frame: whatever the
+   // right answer is for the first frame is the right answer for the rest,
+   // and a question repeated 640 times is not a question. The cost is that an
+   // answer cannot be revised without running again, which is the cheaper of
+   // the two mistakes.
+   //
+   // MessageBox offers three buttons and does not let their labels be set, so
+   // the text has to say what Yes and No mean. Spelling them out is also the
+   // only place there is room to say what compositing anyway actually does.
+   mismatchDecision(file, outcome) {
+      if (this.mismatchPolicy !== "ask") {
+         return this.mismatchPolicy;
+      }
+
+      var cause = outcome.code === "samples"
+         ? "The trails cover so much of the frame that there is almost no sky "
+         + "left to measure the two against each other. A corridor width or a "
+         + "candidate count far larger than usual does this."
+         : "A frame and its master should differ by roughly a constant factor "
+         + "near 1. A factor this far from 1 usually means the two do not "
+         + "belong together: a master from another session or another filter, "
+         + "a master that has already been stretched, or frames shot at a "
+         + "different exposure or ISO.";
+
+      var box = new MessageBox(
+           file + " does not match the master:\n"
+         + outcome.reason + ".\n\n"
+         + cause + "\n\n"
+         + "Composite it anyway?\n\n"
+         + "Yes - composite it, and every later frame this happens to.\n"
+         + "No - leave it out, and every later frame this happens to.\n"
+         + "Cancel - stop now and write nothing.\n\n"
+         + "Compositing a frame that does not match adds whatever the fit "
+         + "leaves behind, which is usually a patch of sky around each trail "
+         + "rather than a meteor. It is still worth one look: if the result is "
+         + "right, then the accepted range is too narrow for this data, and "
+         + "that is worth reporting.",
+         TITLE, StdIcon.Warning,
+         StdButton.Yes, StdButton.No, StdButton.Cancel,
+         StdButton.No, StdButton.Cancel);
+
+      var answer = box.execute();
+      if (answer === StdButton.Yes) {
+         this.mismatchPolicy = "force";
+      } else if (answer === StdButton.No) {
+         this.mismatchPolicy = "skip";
+      } else {
+         this.mismatchPolicy = "cancel";
+      }
+      console.warningln("mismatching frames: "
+                        + (this.mismatchPolicy === "force" ? "composited anyway"
+                         : this.mismatchPolicy === "skip"  ? "left out"
+                         : "stopping")
+                        + " (chosen by the operator)");
+      return this.mismatchPolicy;
+   }
+
    compose(masterPath, outputPath, jobs) {
       var masterWindow = ImageWindow.open(masterPath)[0];
       if (!masterWindow) {
@@ -4030,8 +4091,15 @@ var MeteorComposerDialog = class extends Dialog {
 
       var composed = 0;
       var skipped = [];
+      var forced = [];
       var aborted = false;
+      var abortReason = "aborted by the user";
       var W, H, channels;
+
+      // Asked at most once per run, and the answer is remembered here. A run
+      // that starts by asking must not carry last run's answer: the master may
+      // be the thing that changed.
+      this.mismatchPolicy = "ask";
 
       // Progress goes to the Process Console, not only to a label in this
       // dialog.
@@ -4154,17 +4222,44 @@ var MeteorComposerDialog = class extends Dialog {
                   subChannels.push(channelToArray(subImage, ch));
                }
 
+               // Once the operator has said to composite mismatching frames,
+               // the check is asked to report rather than to stop. The frame
+               // is not fitted twice: composeFrame() runs the same check
+               // either way and hands back what it found, so a forced frame
+               // can still be named in the report.
                var outcome = composeFrame(masterChannels, subChannels,
                                           corridorField.data, W, H, job.trails,
-                                          rects, added, combinedMask, null);
+                                          rects, added, combinedMask,
+                                          { acceptAnyFit:
+                                               this.mismatchPolicy === "force" });
                if (!outcome.written) {
-                  // Compositing a frame that does not match the master
-                  // produces a result that looks plausible and is wrong, so
-                  // the frame is left out and the operator is told. Nothing
-                  // was written for any channel.
-                  skipped.push(job.file + ": " + outcome.reason);
-                  console.warningln("LEFT OUT - " + outcome.reason);
-                  continue;
+                  var decision = this.mismatchDecision(job.file, outcome);
+                  if (decision === "cancel") {
+                     aborted = true;
+                     abortReason = job.file + " does not match the master";
+                     console.writeln("");
+                     console.warningln("stopped: " + outcome.reason);
+                     break;
+                  }
+                  if (decision !== "force") {
+                     // Leaving it out is what every answer other than "force"
+                     // means, including one this loop does not recognise:
+                     // compositing a frame that does not match the master
+                     // produces a result that looks plausible and is wrong, so
+                     // a typo must not be able to choose it. Nothing was
+                     // written for any channel.
+                     skipped.push(job.file + ": " + outcome.reason);
+                     console.warningln("LEFT OUT - " + outcome.reason);
+                     continue;
+                  }
+                  // Told to composite it anyway. This is the only frame that
+                  // has to be fitted a second time: the answer was not known
+                  // when its fit was computed, and every frame after it runs
+                  // with acceptAnyFit from the start.
+                  outcome = composeFrame(masterChannels, subChannels,
+                                         corridorField.data, W, H, job.trails,
+                                         rects, added, combinedMask,
+                                         { acceptAnyFit: true });
                }
 
                ++composed;
@@ -4177,6 +4272,10 @@ var MeteorComposerDialog = class extends Dialog {
                                + "  peak=" + peaks.join("/")
                                + "  mask=" + outcome.trails[0].coverage.touched + "px"
                                + "  (" + (Date.now() - frameStarted) + " ms)");
+               if (outcome.warning !== null) {
+                  forced.push(job.file + ": " + outcome.warning);
+                  console.warningln("    FORCED IN - " + outcome.warning);
+               }
             } finally {
                subWindow.forceClose();
             }
@@ -4186,14 +4285,16 @@ var MeteorComposerDialog = class extends Dialog {
             // Nothing is written. A composite holding the first few meteors
             // and not the rest looks exactly like a finished one, and the
             // operator asked for it to stop, not for a partial result.
-            console.writeln("<end><cbr>MeteorComposer: cancelled after "
+            console.writeln("<end><cbr>MeteorComposer: stopped after "
                             + composed + " of " + jobs.length
-                            + " frames. Nothing was written.");
+                            + " frames - " + abortReason
+                            + ". Nothing was written.");
             console.flush();
-            this.progressLabel.text = "Composition cancelled after "
+            this.progressLabel.text = "Composition stopped after "
                                     + composed + " / " + jobs.length;
-            (new MessageBox("Cancelled after " + composed + " of " + jobs.length
-                          + " frames.\n\nNothing was written: a composite with "
+            (new MessageBox("Stopped after " + composed + " of " + jobs.length
+                          + " frames: " + abortReason
+                          + ".\n\nNothing was written: a composite with "
                           + "only some of the meteors in it is "
                           + "indistinguishable from a finished one.",
                             TITLE, StdIcon.Information, StdButton.Ok)).execute();
@@ -4229,6 +4330,13 @@ var MeteorComposerDialog = class extends Dialog {
                      + outputPath + "\n" + maskPath + "\n\n"
                      + "The mask covers " + (coverage.fraction * 100).toFixed(2)
                      + "% of the frame.";
+         if (forced.length > 0) {
+            // Named, not just counted. A forced frame is the one to look at
+            // first when the composite looks wrong, and the report is the only
+            // place that survives the run.
+            message += "\n\nComposited despite not matching the master:\n  "
+                     + forced.join("\n  ");
+         }
          if (skipped.length > 0) {
             message += "\n\nLeft out:\n  " + skipped.join("\n  ");
          }
@@ -4244,6 +4352,13 @@ var MeteorComposerDialog = class extends Dialog {
          console.writeln("  mask covers " + (coverage.fraction * 100).toFixed(3)
                          + "% of the frame (" + coverage.touched + " pixels, "
                          + coverage.solid + " solid)");
+         if (forced.length > 0) {
+            console.warningln("  composited despite not matching the master, "
+                              + forced.length + ":");
+            for (var fo = 0; fo < forced.length; ++fo) {
+               console.warningln("    " + forced[fo]);
+            }
+         }
          if (skipped.length > 0) {
             console.warningln("  left out " + skipped.length + ":");
             for (var sk = 0; sk < skipped.length; ++sk) {
