@@ -52,6 +52,14 @@
 // cut off, and the operator pans anyway.
 #define FOLLOW_MARGIN 24
 
+// Pane geometry. The splitter handle sets its own fixed width to this, and the
+// dialog's sizer uses this margin; paneBudget() has to agree with both, so they
+// are named rather than repeated as literals.
+#define SPLITTER_WIDTH 7
+#define DIALOG_MARGIN 8
+#define LIST_MIN_WIDTH 220
+#define DETAIL_MIN_WIDTH 180
+
 // Written beside the detection results after every verdict, so that closing
 // the dialog - or losing it - never costs the screening work.
 #define AUTOSAVE_NAME "meteor_session.json"
@@ -174,7 +182,31 @@ function attachColours(image, candidates, factor) {
 // computing the statistics are.
 //============================================================================
 
-function computeSTF(view) {
+// What each stretch mode asks for, in one place.
+//
+// Every mode decision goes through here rather than being compared against a
+// string wherever it happens to be needed. Adding a fourth mode later then
+// means adding a row, not hunting for the branches that were missed - which is
+// the failure this project has already had with `edgeContact` and with
+// `row.colour`. tests/ut/test_module_isolation.js enforces the single point of
+// decision statically.
+function stfPlan(mode) {
+   if (mode === "none") {
+      // Linear. Nothing to compute, so nothing to lock either.
+      return { stretch: false, linked: false, lockable: false };
+   }
+   if (mode === "linked") {
+      return { stretch: true, linked: true, lockable: true };
+   }
+   // "unlinked" and anything unrecognised. Unlinked is what this script has
+   // always done, so an unknown value from Settings lands on the behaviour the
+   // operator already knows rather than on a surprise.
+   return { stretch: true, linked: false, lockable: true };
+}
+
+var STF_MODES = ["none", "linked", "unlinked"];
+
+function computeSTF(view, linked) {
    var median = view.computeOrFetchProperty("Median");
    var mad = view.computeOrFetchProperty("MAD");
    var centre = [];
@@ -184,7 +216,12 @@ function computeSTF(view) {
       centre.push(Math.max(0.00001, median[i]));
       sigma.push(1.4826 * mad[i]);
    }
-   return view.image.computeAutoStretch(centre, sigma, -2.8, 0.25, false);
+   // The last argument is linkedRGB. Unlinked gives each channel its own
+   // stretch, which pulls a colour cast out of the sky and makes a faint trail
+   // easier to see against it; linked keeps the channels in proportion, so the
+   // colour of the trail itself is the colour it was recorded with. Both are
+   // useful while screening, for different questions.
+   return view.image.computeAutoStretch(centre, sigma, -2.8, 0.25, linked);
 }
 
 // Render one frame at 1:1.
@@ -193,7 +230,8 @@ function computeSTF(view) {
 // cost ~445 ms of the ~1.2 s per frame, and registered frames from one
 // session are statistically near-identical, so locking is the single largest
 // saving available here.
-function renderFrame(path, lockedSTF) {
+function renderFrame(path, lockedSTF, mode) {
+   var plan = stfPlan(mode);
    var windows = ImageWindow.open(path);
    if (!windows || windows.length === 0) {
       return null;
@@ -202,9 +240,16 @@ function renderFrame(path, lockedSTF) {
    var stretched = null;
    try {
       var view = win.mainView;
-      var stf = lockedSTF !== null ? lockedSTF : computeSTF(view);
+      // No stretch at all still needs the copy: render() reads the image, and
+      // the window is closed on the way out.
+      var stf = null;
+      if (plan.stretch) {
+         stf = lockedSTF !== null ? lockedSTF : computeSTF(view, plan.linked);
+      }
       stretched = new Image(view.image);
-      stretched.applyDisplayFunction(stf);
+      if (stf !== null) {
+         stretched.applyDisplayFunction(stf);
+      }
       return {
          bitmap: stretched.render(),
          width: view.image.width,
@@ -326,6 +371,21 @@ var FrameCache = class {
       this.order = [];    // paths, most recent last
       this.entries = {};  // path -> render result
       this.lockedSTF = null;
+      this.stfMode = "unlinked";
+   }
+
+   // Changing the stretch invalidates everything already rendered. The cache
+   // holds finished bitmaps, not images, so an entry rendered under the old
+   // mode cannot be re-stretched - it has to go. The locked stretch goes with
+   // it: a stretch computed as unlinked is not the linked answer.
+   setSTFMode(mode) {
+      if (this.stfMode === mode) {
+         return false;
+      }
+      this.stfMode = mode;
+      this.lockedSTF = null;
+      this.clear();
+      return true;
    }
 
    has(path) {
@@ -337,13 +397,15 @@ var FrameCache = class {
          this.touch(path);
          return this.entries[path];
       }
-      var result = renderFrame(path, this.lockedSTF);
+      var result = renderFrame(path, this.lockedSTF, this.stfMode);
       if (result === null) {
          return null;
       }
       // The first successful render supplies the stretch for the rest of the
-      // session unless the operator unlocks it.
-      if (this.lockedSTF === null && this.lockSTF) {
+      // session unless the operator unlocks it. With no stretch there is
+      // nothing to carry, and result.stf is null - storing it would look like
+      // "not locked yet" and recompute forever.
+      if (this.lockedSTF === null && this.lockSTF && result.stf !== null) {
          this.lockedSTF = result.stf;
       }
       this.put(path, result);
@@ -997,10 +1059,10 @@ var CandidateDetailControl = class extends Frame {
 //============================================================================
 
 var SplitterHandle = class extends Control {
-   constructor(parent, onDragged) {
+   constructor(parent, onDragged, onReleased) {
       super(parent);
 
-      this.setFixedWidth(7);
+      this.setFixedWidth(SPLITTER_WIDTH);
       this.cursor = new Cursor(StdCursor.HorizontalSize);
       this.toolTip = "<p>Drag to resize the panes.</p>";
 
@@ -1045,8 +1107,15 @@ var SplitterHandle = class extends Control {
          }
       };
 
+      // Release, not every move. Persisting a width on each mouse-move event
+      // would write to the settings store dozens of times per drag for a value
+      // that only matters once the operator lets go.
       this.onMouseRelease = function (x, y, button, buttonState, modifiers) {
+         var wasDragging = self.dragging;
          self.dragging = false;
+         if (wasDragging && onReleased) {
+            onReleased();
+         }
       };
    }
 };
@@ -1379,6 +1448,11 @@ var MeteorComposerDialog = class extends Dialog {
       // time. "edges" with every number at zero excludes nothing, which is what
       // an untouched dialog has to mean: the mask must not be able to change a
       // result by being present.
+      // Raised until restoreSettings() finishes. Persisting the mask is driven
+      // from refreshMask(), which runs while the controls are being built, and
+      // at that point the model holds defaults rather than anything the
+      // operator chose.
+      this._restoringSettings = true;
       this.maskMode = "edges";
       this.maskEdges = makeEdgeSpec();
       this.maskFilePath = "";
@@ -1435,23 +1509,41 @@ var MeteorComposerDialog = class extends Dialog {
 
       this.listSplitter = new SplitterHandle(this, function (delta) {
          self.setListWidth(self.listWidth + delta);
+      }, function () {
+         self.saveViewSettings();
       });
       // Dragging the right-hand handle rightwards should shrink the detail
       // pane, hence the inverted sign.
       this.detailSplitter = new SplitterHandle(this, function (delta) {
          self.setDetailWidth(self.detailWidth - delta);
+      }, function () {
+         self.saveViewSettings();
       });
+
+      // The toolbar spans both previews, so the two panes and the handle
+      // between them sit under one header.
+      var viewSplit = new HorizontalSizer;
+      viewSplit.spacing = 0;
+      viewSplit.add(this.previewPanel, 100);
+      viewSplit.add(this.detailSplitter);
+      viewSplit.add(this.detailPanel);
+
+      var viewSizer = new VerticalSizer;
+      viewSizer.spacing = 4;
+      viewSizer.add(this.viewToolbar);
+      viewSizer.add(viewSplit, 100);
+
+      this.viewPanel = new Control(this);
+      this.viewPanel.sizer = viewSizer;
 
       var split = new HorizontalSizer;
       split.spacing = 0;
       split.add(this.listPanel);
       split.add(this.listSplitter);
-      split.add(this.previewPanel, 100);
-      split.add(this.detailSplitter);
-      split.add(this.detailPanel);
+      split.add(this.viewPanel, 100);
 
       this.sizer = new VerticalSizer;
-      this.sizer.margin = 8;
+      this.sizer.margin = DIALOG_MARGIN;
       this.sizer.spacing = 6;
       this.sizer.add(this.sourceGroup);
       this.sizer.add(split, 100);
@@ -1459,6 +1551,12 @@ var MeteorComposerDialog = class extends Dialog {
       this.sizer.add(this.buttonSizer);
 
       this.setMinSize(1180, 760);
+
+      // Narrowing the window has to pull the fixed panes back in, or the row
+      // overflows off the edge with no scrollbar to recover it.
+      this.onResize = function () {
+         self.reclampPanes();
+      };
 
       // The dialog, the list and the preview all get the same handler:
       // whichever has focus, the judging keys have to work.
@@ -2115,6 +2213,42 @@ var MeteorComposerDialog = class extends Dialog {
          self.preview.zoomOut();
       };
 
+      // A ComboBox rather than three buttons, measured rather than guessed.
+      // The preview pane promises 420 px (setScaledMinSize) and the toolbar
+      // already wants 703. Three ToolButtons take it to 914 and squeeze the
+      // frame name down to 31 px at the minimum window width; label plus
+      // ComboBox takes it to 830 and leaves the name 42. Neither clips a
+      // control, so the choice went to the narrower one - which also shows the
+      // current mode natively, instead of the "▶Linked" text marker the two
+      // solver scripts use to fake it. tests/pjsr/probe_layout.js stage 6.
+      this.stfLabel = new Label(this);
+      this.stfLabel.text = "STF:";
+      this.stfLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
+
+      this.stfCombo = new ComboBox(this);
+      this.stfCombo.addItem("None");
+      this.stfCombo.addItem("Linked");
+      this.stfCombo.addItem("Unlinked");
+      // A ComboBox starts on item 0, so leaving this out would show "None"
+      // while the cache renders unlinked. The control and the thing it
+      // controls have to start from the same place, and the order of STF_MODES
+      // is the order of the items.
+      this.stfCombo.currentItem = STF_MODES.indexOf("unlinked");
+      this.stfCombo.toolTip =
+         "<p><b>Unlinked</b> stretches each channel on its own statistics. It "
+       + "pulls the colour cast out of the sky, which is usually the easiest "
+       + "background to spot a faint trail against. This is the default.</p>"
+       + "<p><b>Linked</b> uses one stretch for all three channels, so the "
+       + "trail keeps the colour it was recorded with. Worth a look when you "
+       + "are deciding whether something is a meteor: they tend to be green, "
+       + "and unlinked takes that cue away.</p>"
+       + "<p><b>None</b> is the linear image. Almost everything disappears, "
+       + "which is what makes it useful for judging how bright a trail really "
+       + "was.</p>";
+      this.stfCombo.onItemSelected = function (index) {
+         self.setSTFMode(STF_MODES[index]);
+      };
+
       this.lockSTFCheck = new CheckBox(this);
       this.lockSTFCheck.text = "Lock stretch";
       this.lockSTFCheck.checked = true;
@@ -2189,7 +2323,30 @@ var MeteorComposerDialog = class extends Dialog {
       this.lockSTFCheck.minWidth =
          this.font.width(this.lockSTFCheck.text) + 20;
 
+      // A ComboBox has a minWidth of zero too - the same trap as the CheckBox
+      // above, and it was walked into anyway. Measured at 65 px in a 490 px
+      // toolbar and 42 px in a 420 px one, for a control whose widest item
+      // ("Unlinked") needs 47 px of text plus the drop-down arrow. So the
+      // longest item was cut at the width the operator actually opens at.
+      //
+      // The floor is the widest item plus room for the arrow, which is what
+      // adjustToContents() would have asked for - it reports 86 - rather than a
+      // number invented here.
+      this.stfCombo.adjustToContents();
+      this.stfCombo.minWidth = this.stfCombo.width;
+
+      // A Label is elastic as well. "STF:" came out at exactly the width of
+      // its text, with nothing to spare.
+      this.stfLabel.minWidth = this.font.width(this.stfLabel.text) + 4;
+
+      // Kept on `this` because it no longer lives in this panel. The two
+      // previews used to carry a header each, side by side, and the operator
+      // reported the left one overlapping itself at the initial window size.
+      // One header above both is wider by the whole detail pane - 777 px at
+      // the minimum window size instead of 490 - and the detail pane's own
+      // controls move a row further in, where 280 px is plenty for them.
       var toolbar = new HorizontalSizer;
+      this.viewToolbar = toolbar;
       toolbar.spacing = 4;
       toolbar.add(this.fitButton);
       toolbar.add(this.zoom11Button);
@@ -2199,13 +2356,14 @@ var MeteorComposerDialog = class extends Dialog {
       toolbar.add(this.rotateLeftButton);
       toolbar.add(this.rotateRightButton);
       toolbar.addSpacing(10);
+      toolbar.add(this.stfLabel);
+      toolbar.add(this.stfCombo);
+      toolbar.addSpacing(10);
       toolbar.add(this.lockSTFCheck);
       toolbar.addSpacing(10);
       toolbar.add(this.frameLabel, 100);
 
       this.previewSizer = new VerticalSizer;
-      this.previewSizer.spacing = 4;
-      this.previewSizer.add(toolbar);
       this.previewSizer.add(this.preview, 100);
 
       // Whenever the preview redraws its frame - a new frame, or a turn - the
@@ -2253,20 +2411,90 @@ var MeteorComposerDialog = class extends Dialog {
       this.detailSizer.add(this.detail, 100);
    }
 
+   // What the two fixed-width panes may share between them.
+   //
+   // The blanket cap of 900 each that used to be here ignored the window. At
+   // the minimum size of 1180 the row has 1164 to spend, and the list alone
+   // wants 380, so:
+   //
+   //   380 list + 7 handle + 420 preview minimum + 7 handle = 814
+   //   leaving 350 for the detail pane, not 900
+   //
+   // Dragging the handle past that asked for 1714 in a 1164 row. A PJSR dialog
+   // has no scrollbar, so the excess does not scroll - it goes off the edge,
+   // and the operator sees the right-hand pane's contents slide out of view
+   // with nothing to bring them back. Reported as "the detection box
+   // disappeared", which is what it looks like from the outside.
+   //
+   // The preview keeps its minimum rather than sharing the shortfall: it is
+   // the pane the judgement is actually made in.
+   paneBudget() {
+      var usable = this.width - 2 * DIALOG_MARGIN
+                 - 2 * SPLITTER_WIDTH - this.preview.minWidth;
+      return Math.max(0, usable);
+   }
+
    setListWidth(width) {
-      this.listWidth = Math.max(220, Math.min(900, Math.round(width)));
+      // The floor wins over the budget. A window too small for both floors is
+      // prevented by setMinSize, but a floor that gives way would let a pane
+      // vanish, and a pane of zero width cannot be dragged back.
+      var room = Math.max(LIST_MIN_WIDTH, this.paneBudget() - this.detailWidth);
+      this.listWidth = Math.max(LIST_MIN_WIDTH,
+                                Math.min(room, Math.round(width)));
       this.listPanel.setFixedWidth(this.listWidth);
    }
 
    setDetailWidth(width) {
-      this.detailWidth = Math.max(180, Math.min(900, Math.round(width)));
+      var room = Math.max(DETAIL_MIN_WIDTH, this.paneBudget() - this.listWidth);
+      this.detailWidth = Math.max(DETAIL_MIN_WIDTH,
+                                  Math.min(room, Math.round(width)));
       this.detailPanel.setFixedWidth(this.detailWidth);
+   }
+
+   // Shrinking the window has to pull the panes back in. Without this, a width
+   // that was legal in a wide window stays put when the window narrows, and
+   // the row overflows again - the same symptom by a different route. Also
+   // covers the widths restored from Settings, which are applied before the
+   // window has its real size.
+   reclampPanes() {
+      // The detail pane gives way first, and the order is the whole point.
+      //
+      // Clamping the list first made it surrender to whatever the detail pane
+      // currently held: widening the detail pane to 510 in a 1180 window left
+      // the list at its floor of 220, and the width the operator had chosen for
+      // it was gone for good. Found by reading the stored settings back
+      // (listWidth 220, detailWidth 510) rather than by looking at the screen.
+      //
+      // The list's width is not arbitrary - there is code that sizes it to the
+      // columns it has to show - while the detail pane is a magnifier that
+      // works at any size. So the magnifier is the one that shrinks.
+      this.setDetailWidth(this.detailWidth);
+      this.setListWidth(this.listWidth);
    }
 
    setRotation(degrees) {
       this.preview.setRotation(degrees);
       this.preview.centreOn(this.preview.selectedIndex);
       this.refreshFrameLabel();
+      this.saveViewSettings();
+   }
+
+   // Changing the stretch means re-reading and re-rendering the frame on
+   // screen, which costs about a second. Nothing else in the session changes:
+   // candidates, verdicts and the mask are all measured on the data, not on
+   // how it is displayed.
+   setSTFMode(mode) {
+      if (!this.cache.setSTFMode(mode)) {
+         return;
+      }
+      // Locking has nothing to hold on to without a stretch. The checkbox is
+      // left where the operator put it rather than being forced off, so that
+      // returning to Linked or Unlinked restores their own choice.
+      this.lockSTFCheck.enabled = stfPlan(mode).lockable;
+      this.saveViewSettings();
+      if (this.session !== null) {
+         this.showCurrentFrame();
+      }
    }
 
    // Said out loud, because a turned preview is otherwise invisible and it
@@ -2692,6 +2920,21 @@ var MeteorComposerDialog = class extends Dialog {
       this.maskReadout.text = "Excluded: " + (fraction * 100).toFixed(1)
                             + "% of the frame";
       this.preview.setMask(haveFrame ? maskOverlayBitmap(mask, fw, fh) : null);
+      this.persistMask();
+   }
+
+   // Every edit to the mask - a depth, a tilt, the CCW box, the radio pair, the
+   // file, the turn - ends up in refreshMask(). Persisting from there rather
+   // than from each handler means a new control cannot be added and forgotten,
+   // which is the same reason the selected row is read through one accessor.
+   //
+   // Restoring is the one caller that must not write: it would log a save for a
+   // value it just read, and it runs before the operator has done anything.
+   persistMask() {
+      if (this._restoringSettings) {
+         return;
+      }
+      this.saveMaskSetting();
    }
 
    // Recorded in the detection results, so that a results file carries the mask
@@ -4018,6 +4261,19 @@ var MeteorComposerDialog = class extends Dialog {
    }
 
    restoreSettings() {
+      try {
+         this.restoreSettingsInner();
+      } finally {
+         // Construction and restore are both "not the operator". The flag is
+         // raised in the constructor, before any control exists, and comes down
+         // here - not at the start of this method. Building the mask controls
+         // calls refreshMask(), and with the flag down that would have written
+         // an empty mask over the stored one before this method got to read it.
+         this._restoringSettings = false;
+      }
+   }
+
+   restoreSettingsInner() {
       var dir = Settings.read(SETTINGS_KEY + "/registeredDir", DataType.String);
       if (dir !== null && dir.length > 0) {
          this.registeredDir = dir;
@@ -4049,6 +4305,20 @@ var MeteorComposerDialog = class extends Dialog {
          this.preview.rotation = normalizeRotation(rotation);
       }
 
+      // The stretch is a way of looking, not a property of the night, so it
+      // belongs with the rotation rather than with the session. An unknown
+      // value falls through stfPlan() to unlinked, which is what the script
+      // did before there was a choice.
+      var stfMode = Settings.read(SETTINGS_KEY + "/stfMode", DataType.String);
+      if (stfMode !== null) {
+         var known = STF_MODES.indexOf(stfMode);
+         if (known >= 0) {
+            this.cache.stfMode = stfMode;
+            this.stfCombo.currentItem = known;
+            this.lockSTFCheck.enabled = stfPlan(stfMode).lockable;
+         }
+      }
+
       // The mask describes the site, not the night, so it outlives a session:
       // the same trees are in the way next time. Stored as JSON rather than as
       // nine separate keys, because it is one setting.
@@ -4066,16 +4336,48 @@ var MeteorComposerDialog = class extends Dialog {
       this.maskSourceChanged();
    }
 
+   // Persist now, not at closing time.
+   //
+   // Everything here used to be written once, from main(), after execute()
+   // returned. An operator set a tilt back to zero, closed, reopened and found
+   // the old value. The store held the old value, and the three settings it did
+   // hold - list 220, detail 510, tilt 37 - were exactly the set left by an
+   // earlier session, which is what a save that never ran looks like. Whatever
+   // skipped it (an exception out of execute(), quitting the application rather
+   // than the dialog), betting the operator's settings on one exit path was the
+   // mistake.
+   //
+   // This project already made the same call for verdicts, which are written
+   // after every keystroke so that nothing is lost by forgetting to save. There
+   // was no reason for the mask and the view settings to be treated as less
+   // durable than that. Settings.write() is cheap, and these change at human
+   // speed.
+   //
+   // saveSettings() stays, called from main() as before, as a backstop for
+   // anything that changed without going through a setter.
    saveSettings() {
+      this.saveViewSettings();
+      this.saveMaskSetting();
       Settings.write(SETTINGS_KEY + "/registeredDir", DataType.String,
                      this.registeredDir);
       Settings.write(SETTINGS_KEY + "/outputDir", DataType.String, this.outputDir);
+   }
+
+   saveViewSettings() {
       Settings.write(SETTINGS_KEY + "/listWidth", DataType.Int32, this.listWidth);
       Settings.write(SETTINGS_KEY + "/detailWidth", DataType.Int32, this.detailWidth);
       Settings.write(SETTINGS_KEY + "/rotation", DataType.Int32,
                      normalizeRotation(this.preview.rotation));
-      Settings.write(SETTINGS_KEY + "/mask", DataType.String,
-                     JSON.stringify(this.maskSpec()));
+      Settings.write(SETTINGS_KEY + "/stfMode", DataType.String,
+                     this.cache.stfMode);
+   }
+
+   saveMaskSetting() {
+      var maskJSON = JSON.stringify(this.maskSpec());
+      Settings.write(SETTINGS_KEY + "/mask", DataType.String, maskJSON);
+      // Said out loud, at the moment it happens. The question "was it saved?"
+      // is then answered by the log the operator already keeps.
+      console.writeln("<end><cbr>mask saved: " + maskJSON);
    }
 
    updateEnabled() {

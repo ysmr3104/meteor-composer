@@ -673,6 +673,88 @@ suite("the selected row is only read through currentDisplayedRow()", function ()
 });
 
 
+//----------------------------------------------------------------------------
+// Every stretch-mode decision goes through stfPlan()
+//
+// The preview has three stretch modes, and each one answers two questions:
+// whether to stretch at all, and whether the channels are linked. Comparing
+// the mode string wherever an answer is needed is how a mode gets half
+// implemented - this project has already shipped a feature that was computed,
+// tested and never supplied (`row.colour`), and a merge that dropped
+// `edgeContact` so a threshold silently compared against undefined.
+//
+// So the mapping lives in one function and this forbids the scattered form.
+//----------------------------------------------------------------------------
+
+suite("stretch modes are only interpreted by stfPlan()", function () {
+   ok(fs.existsSync(MAIN), "MeteorComposer.js exists");
+   if (!fs.existsSync(MAIN)) {
+      return;
+   }
+   var source = fs.readFileSync(MAIN, "utf8");
+
+   ok(/function stfPlan\s*\(\s*mode\s*\)\s*\{/.test(source),
+      "the mapping function exists");
+   ok(/var STF_MODES\s*=/.test(source),
+      "the mode list exists, so the UI and the mapping share an order");
+
+   // The body of stfPlan is the one place a mode string may be compared.
+   var start = source.indexOf("function stfPlan");
+   ok(start >= 0, "stfPlan is findable");
+   var end = source.indexOf("\nvar STF_MODES", start);
+   ok(end > start, "the mode list follows stfPlan, so the body is bounded");
+
+   var lines = source.split("\n");
+   var planFirst = source.slice(0, start).split("\n").length;
+   var planLast = source.slice(0, end).split("\n").length;
+
+   var scattered = [];
+   for (var i = 0; i < lines.length; ++i) {
+      var line = lines[i];
+      // A comparison against one of the mode strings.
+      if (!/(===|!==)\s*"(none|linked|unlinked)"/.test(line)
+          && !/"(none|linked|unlinked)"\s*(===|!==)/.test(line)) {
+         continue;
+      }
+      // Inside stfPlan itself is where it belongs.
+      if (i + 1 >= planFirst && i + 1 <= planLast) {
+         continue;
+      }
+      scattered.push("line " + (i + 1) + ": " + line.trim());
+   }
+   ok(scattered.length === 0,
+      "no stretch mode is interpreted outside stfPlan"
+      + (scattered.length > 0 ? ":\n        " + scattered.join("\n        ") : ""));
+
+   // The combo offers exactly the modes the mapping knows, in that order.
+   var listMatch = source.match(/var STF_MODES\s*=\s*\[([^\]]*)\]/);
+   ok(listMatch !== null, "the mode list is a literal array");
+   if (listMatch !== null) {
+      var modes = listMatch[1].split(",").map(function (s) {
+         return s.trim().replace(/^"|"$/g, "");
+      });
+      ok(modes.length === 3, "three modes: " + modes.join(", "));
+      var items = [];
+      var re = /stfCombo\.addItem\("([^"]+)"\)/g;
+      var m;
+      while ((m = re.exec(source)) !== null) {
+         items.push(m[1].toLowerCase());
+      }
+      ok(items.length === modes.length,
+         "the combo offers one item per mode (" + items.length + " vs "
+         + modes.length + ")");
+      var aligned = items.length === modes.length;
+      for (var k = 0; aligned && k < items.length; ++k) {
+         if (items[k] !== modes[k]) {
+            aligned = false;
+         }
+      }
+      ok(aligned,
+         "the combo items are in the order of STF_MODES, so the selected index "
+         + "names the right mode (items " + items.join("/") + ")");
+   }
+});
+
 console.log("\n============================================");
 console.log("passed: " + passed + "  failed: " + failed);
 if (failed > 0) {

@@ -160,7 +160,27 @@ echo "updates-meteor.xri を生成しました"
 rm -rf "${TMPDIR_BASE}"
 
 echo ""
+# 署名を作業ツリーから消す
+#
+# zip に入った時点で、javascript/ に残った .xsgn には用がありません。用が
+# 無いのに置いておくと実行を壊します。次に .js を 1 行直した瞬間に署名が
+# 不正になり、PixInsight は Preferences の設定に関わらず実行を拒否します。
+#
+#   *** Error: Signature verification failed for 'MeteorComposer':
+#       Invalid code signature.
+#
+# .gitignore に入れるだけでは足りませんでした。git は追跡しなくなりますが、
+# 署名したマシンのディスクにはファイルが居座り続けるためです。実際に
+# 1.0.1 のリリース後、次の変更の動作確認がこれで止まりました。
+#
+# 消して困ることはありません。署名は tools/sign.sh の 1 コマンドで作り直せ、
+# 配布物はもう zip の中にあります。
+rm -f "$SIGNATURE"
+
 echo "=== ビルド完了 ==="
 echo "  ${REPO_DIR}/${ZIP_NAME} (${VERSION_RANGE})"
 echo "  ${REPO_DIR}/updates-meteor.xri"
 echo "  SHA1: ${SHA1}"
+echo ""
+echo "  javascript/${PACKAGE_NAME}.xsgn は削除しました（zip に入っています）。"
+echo "  署名なしの状態が開発中の通常です。次のリリースでまた署名してください。"

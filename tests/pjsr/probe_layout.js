@@ -470,5 +470,306 @@ try {
    say("  ERROR: " + e);
 }
 
+//----------------------------------------------------------------------------
+// 6. The preview toolbar has to grow: where does an STF mode control fit?
+//
+// The preview pane has a minimum width of 420 (setScaledMinSize). Anything the
+// toolbar needs beyond that forces the whole dialog wider, or squeezes a
+// control until its own label is cut - which is exactly how the "h" of "Lock
+// stretch" went missing once already. So measure the row's required width with
+// each candidate control before choosing one.
+//----------------------------------------------------------------------------
+
+say("");
+say("6. Adding an STF mode control to the preview toolbar");
+say("");
+
+function previewToolbar(host, extra, lockText) {
+   var row = new HorizontalSizer;
+   row.spacing = 4;
+
+   var labels = ["Fit", "1:1", "+", "-", "\u21b6", "\u21b7"];
+   var widest = 0;
+   var i;
+   for (i = 0; i < labels.length; ++i) {
+      widest = Math.max(widest, host.font.width(labels[i]));
+   }
+   for (i = 0; i < labels.length; ++i) {
+      var tb = new ToolButton(host);
+      tb.text = labels[i];
+      tb.setFixedWidth(widest + 16);
+      row.add(tb);
+      if (i === 3) {
+         row.addSpacing(8);
+      }
+   }
+   row.addSpacing(10);
+
+   var added = 0;
+   if (extra === "combo") {
+      var stfLabel = new Label(host);
+      stfLabel.text = "STF:";
+      row.add(stfLabel);
+      var combo = new ComboBox(host);
+      combo.addItem("None");
+      combo.addItem("Linked");
+      combo.addItem("Unlinked");
+      combo.adjustToContents();
+      row.add(combo);
+      row.addSpacing(10);
+      added = stfLabel.width + combo.width;
+   } else if (extra === "buttons") {
+      var names = ["None", "Linked", "Unlinked"];
+      var w = 0;
+      for (i = 0; i < names.length; ++i) {
+         w = Math.max(w, host.font.width(names[i]));
+      }
+      for (i = 0; i < names.length; ++i) {
+         var sb = new ToolButton(host);
+         sb.text = names[i];
+         sb.setFixedWidth(w + 16);
+         row.add(sb);
+         added += sb.width;
+      }
+      row.addSpacing(10);
+   }
+
+   var lock = new CheckBox(host);
+   lock.text = lockText;
+   lock.minWidth = host.font.width(lockText) + 20;
+   row.add(lock);
+   row.addSpacing(10);
+
+   var frameLabel = new Label(host);
+   frameLabel.text = "pct-2026-08-12_005232_ILCE-7M3_DSC04904_d_r.xisf   6024x4024";
+   row.add(frameLabel, 100);
+
+   host.sizer = row;
+   host.adjustToContents();
+   host.ensureLayoutUpdated();
+   return { needed: host.width, added: added, lock: lock, label: frameLabel };
+}
+
+try {
+   var variants = [
+      ["no STF control (today)", "none", "Lock stretch"],
+      ["label + ComboBox", "combo", "Lock stretch"],
+      ["three ToolButtons", "buttons", "Lock stretch"],
+      ["label + ComboBox, lock shortened to \"Lock\"", "combo", "Lock"]
+   ];
+   say("  the preview pane's minimum width is 420");
+   say("");
+   for (var v = 0; v < variants.length; ++v) {
+      var h = new Control;
+      var r = previewToolbar(h, variants[v][1], variants[v][2]);
+      say("  " + pad(variants[v][0], 46)
+          + " needs " + pad(r.needed, 5)
+          + " (control adds " + pad(r.added, 4)
+          + ", over the 420 minimum by " + (r.needed - 420) + ")");
+   }
+   say("");
+   say("  Those are the widths the row would like. What decides the question is");
+   say("  what survives when the row is forced into the 420 the pane can");
+   say("  promise, so force it and read every control back.");
+   say("");
+
+   for (v = 0; v < variants.length; ++v) {
+      var h2 = new Control;
+      var r2 = previewToolbar(h2, variants[v][1], variants[v][2]);
+      h2.setFixedWidth(420);
+      h2.ensureLayoutUpdated();
+      var lockWant = h2.font.width(variants[v][2]) + 20;
+      var lockGot = r2.lock.width;
+      say("  " + pad(variants[v][0], 46)
+          + " at 420: lock " + pad(lockGot, 4) + "/" + pad(lockWant, 4)
+          + (lockGot < lockWant ? "  CLIPPED" : "  ok")
+          + "   frame label " + r2.label.width);
+   }
+} catch (e) {
+   say("  ERROR: " + e);
+}
+
+//----------------------------------------------------------------------------
+// 7. How wide is an unconstrained ComboBox, and does the real toolbar fit?
+//
+// Stage 6 called adjustToContents() on the ComboBox before measuring. The
+// dialog does not. If an unconstrained ComboBox is much wider than its items
+// need, that alone would explain a toolbar the operator reports as overlapping
+// at the initial window size - which is worse than clipping.
+//
+// The width the preview pane actually gets at the minimum window size:
+//   1180 dialog - 16 margin - 380 list - 7 - 280 detail - 7 = 490
+//----------------------------------------------------------------------------
+
+say("");
+say("7. The real toolbar at the width the preview pane actually gets");
+say("");
+
+try {
+   var hc = new Control;
+   var rowc = new HorizontalSizer;
+   var cbBare = new ComboBox(hc);
+   cbBare.addItem("None");
+   cbBare.addItem("Linked");
+   cbBare.addItem("Unlinked");
+   rowc.add(cbBare);
+   var cbFit = new ComboBox(hc);
+   cbFit.addItem("None");
+   cbFit.addItem("Linked");
+   cbFit.addItem("Unlinked");
+   cbFit.adjustToContents();
+   rowc.add(cbFit);
+   hc.sizer = rowc;
+   hc.adjustToContents();
+   hc.ensureLayoutUpdated();
+   say("  ComboBox bare               " + cbBare.width
+       + "   minWidth " + cbBare.minWidth);
+   say("  ComboBox adjustToContents   " + cbFit.width
+       + "   minWidth " + cbFit.minWidth);
+   say("  its widest item needs       " + hc.font.width("Unlinked"));
+   say("");
+
+   // The toolbar as the dialog builds it, laid out at 490 and at 420.
+   var widths = [490, 420];
+   for (var w = 0; w < widths.length; ++w) {
+      var h = new Control;
+      var row = new HorizontalSizer;
+      row.spacing = 4;
+      var labels = ["Fit", "1:1", "+", "-", "\u21b6", "\u21b7"];
+      var widest = 0;
+      var i;
+      for (i = 0; i < labels.length; ++i) {
+         widest = Math.max(widest, h.font.width(labels[i]));
+      }
+      var tbs = [];
+      for (i = 0; i < labels.length; ++i) {
+         var tb = new ToolButton(h);
+         tb.text = labels[i];
+         tb.setFixedWidth(widest + 16);
+         tbs.push(tb);
+         row.add(tb);
+         if (i === 3) {
+            row.addSpacing(8);
+         }
+      }
+      row.addSpacing(10);
+      var stfLabel = new Label(h);
+      stfLabel.text = "STF:";
+      row.add(stfLabel);
+      var combo = new ComboBox(h);
+      combo.addItem("None");
+      combo.addItem("Linked");
+      combo.addItem("Unlinked");
+      row.add(combo);
+      row.addSpacing(10);
+      var lock = new CheckBox(h);
+      lock.text = "Lock stretch";
+      lock.minWidth = h.font.width(lock.text) + 20;
+      row.add(lock);
+      row.addSpacing(10);
+      var fl = new Label(h);
+      fl.text = "pct-2026-08-12_005232_ILCE-7M3_DSC04904_d_r.xisf   6024x4024";
+      row.add(fl, 100);
+      h.sizer = row;
+      h.adjustToContents();
+      var wants = h.width;
+      h.setFixedWidth(widths[w]);
+      h.ensureLayoutUpdated();
+
+      var fixed = 6 * (widest + 16) + stfLabel.width + combo.width + lock.width;
+      say("  at " + widths[w] + ": wants " + wants
+          + "   buttons " + (6 * (widest + 16))
+          + "   STF label " + stfLabel.width
+          + "   combo " + combo.width
+          + "   lock " + lock.width
+          + "   frame label " + fl.width);
+      say("        fixed parts total " + fixed + " + spacing 46 = "
+          + (fixed + 46)
+          + (fixed + 46 > widths[w] ? "   OVER by " + (fixed + 46 - widths[w])
+                                    : "   fits, with "
+                                      + (widths[w] - fixed - 46) + " for the name"));
+   }
+} catch (e) {
+   say("  ERROR: " + e);
+}
+
+//----------------------------------------------------------------------------
+// 8. With floors, and with one header spanning both previews
+//
+// Stage 7 found the ComboBox squeezed to 42 px for a control needing 86 - the
+// same zero-minWidth trap as the CheckBox, walked into anyway. Two changes
+// follow: give the elastic controls a floor, and move the header above both
+// previews so it has the detail pane's width as well.
+//
+//   old: header inside the preview pane            490 px
+//   new: header above preview + handle + detail    490 + 7 + 280 = 777 px
+//----------------------------------------------------------------------------
+
+say("");
+say("8. Floors applied, and the header spanning both previews");
+say("");
+
+try {
+   var cases = [777, 490, 420];
+   for (var w = 0; w < cases.length; ++w) {
+      var h = new Control;
+      var row = new HorizontalSizer;
+      row.spacing = 4;
+      var labels = ["Fit", "1:1", "+", "-", "\u21b6", "\u21b7"];
+      var widest = 0;
+      var i;
+      for (i = 0; i < labels.length; ++i) {
+         widest = Math.max(widest, h.font.width(labels[i]));
+      }
+      for (i = 0; i < labels.length; ++i) {
+         var tb = new ToolButton(h);
+         tb.text = labels[i];
+         tb.setFixedWidth(widest + 16);
+         row.add(tb);
+         if (i === 3) {
+            row.addSpacing(8);
+         }
+      }
+      row.addSpacing(10);
+      var stfLabel = new Label(h);
+      stfLabel.text = "STF:";
+      stfLabel.minWidth = h.font.width(stfLabel.text) + 4;
+      row.add(stfLabel);
+      var combo = new ComboBox(h);
+      combo.addItem("None");
+      combo.addItem("Linked");
+      combo.addItem("Unlinked");
+      combo.adjustToContents();
+      combo.minWidth = combo.width;
+      var comboWanted = combo.width;
+      row.add(combo);
+      row.addSpacing(10);
+      var lock = new CheckBox(h);
+      lock.text = "Lock stretch";
+      lock.minWidth = h.font.width(lock.text) + 20;
+      row.add(lock);
+      row.addSpacing(10);
+      var fl = new Label(h);
+      fl.text = "pct-2026-08-12_005232_ILCE-7M3_DSC04904_d_r.xisf   6024x4024";
+      row.add(fl, 100);
+      h.sizer = row;
+      h.adjustToContents();
+      h.setFixedWidth(cases[w]);
+      h.ensureLayoutUpdated();
+
+      say("  at " + cases[w] + ": combo " + combo.width + "/" + comboWanted
+          + (combo.width < comboWanted ? "  SQUEEZED" : "  ok")
+          + "   STF label " + stfLabel.width
+          + "   lock " + lock.width
+          + "   frame name " + fl.width
+          + (fl.width < 40 ? "  (too narrow to read)" : ""));
+   }
+   say("");
+   say("  777 is what the header gets now. 490 was what it had. 420 is the");
+   say("  preview pane's own minimum, kept as the floor case.");
+} catch (e) {
+   say("  ERROR: " + e);
+}
+
 say("");
 say("written to " + OUT);
