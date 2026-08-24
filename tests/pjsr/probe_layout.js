@@ -693,5 +693,83 @@ try {
    say("  ERROR: " + e);
 }
 
+//----------------------------------------------------------------------------
+// 8. With floors, and with one header spanning both previews
+//
+// Stage 7 found the ComboBox squeezed to 42 px for a control needing 86 - the
+// same zero-minWidth trap as the CheckBox, walked into anyway. Two changes
+// follow: give the elastic controls a floor, and move the header above both
+// previews so it has the detail pane's width as well.
+//
+//   old: header inside the preview pane            490 px
+//   new: header above preview + handle + detail    490 + 7 + 280 = 777 px
+//----------------------------------------------------------------------------
+
+say("");
+say("8. Floors applied, and the header spanning both previews");
+say("");
+
+try {
+   var cases = [777, 490, 420];
+   for (var w = 0; w < cases.length; ++w) {
+      var h = new Control;
+      var row = new HorizontalSizer;
+      row.spacing = 4;
+      var labels = ["Fit", "1:1", "+", "-", "\u21b6", "\u21b7"];
+      var widest = 0;
+      var i;
+      for (i = 0; i < labels.length; ++i) {
+         widest = Math.max(widest, h.font.width(labels[i]));
+      }
+      for (i = 0; i < labels.length; ++i) {
+         var tb = new ToolButton(h);
+         tb.text = labels[i];
+         tb.setFixedWidth(widest + 16);
+         row.add(tb);
+         if (i === 3) {
+            row.addSpacing(8);
+         }
+      }
+      row.addSpacing(10);
+      var stfLabel = new Label(h);
+      stfLabel.text = "STF:";
+      stfLabel.minWidth = h.font.width(stfLabel.text) + 4;
+      row.add(stfLabel);
+      var combo = new ComboBox(h);
+      combo.addItem("None");
+      combo.addItem("Linked");
+      combo.addItem("Unlinked");
+      combo.adjustToContents();
+      combo.minWidth = combo.width;
+      var comboWanted = combo.width;
+      row.add(combo);
+      row.addSpacing(10);
+      var lock = new CheckBox(h);
+      lock.text = "Lock stretch";
+      lock.minWidth = h.font.width(lock.text) + 20;
+      row.add(lock);
+      row.addSpacing(10);
+      var fl = new Label(h);
+      fl.text = "pct-2026-08-12_005232_ILCE-7M3_DSC04904_d_r.xisf   6024x4024";
+      row.add(fl, 100);
+      h.sizer = row;
+      h.adjustToContents();
+      h.setFixedWidth(cases[w]);
+      h.ensureLayoutUpdated();
+
+      say("  at " + cases[w] + ": combo " + combo.width + "/" + comboWanted
+          + (combo.width < comboWanted ? "  SQUEEZED" : "  ok")
+          + "   STF label " + stfLabel.width
+          + "   lock " + lock.width
+          + "   frame name " + fl.width
+          + (fl.width < 40 ? "  (too narrow to read)" : ""));
+   }
+   say("");
+   say("  777 is what the header gets now. 490 was what it had. 420 is the");
+   say("  preview pane's own minimum, kept as the floor case.");
+} catch (e) {
+   say("  ERROR: " + e);
+}
+
 say("");
 say("written to " + OUT);

@@ -1496,13 +1496,27 @@ var MeteorComposerDialog = class extends Dialog {
          self.setDetailWidth(self.detailWidth - delta);
       });
 
+      // The toolbar spans both previews, so the two panes and the handle
+      // between them sit under one header.
+      var viewSplit = new HorizontalSizer;
+      viewSplit.spacing = 0;
+      viewSplit.add(this.previewPanel, 100);
+      viewSplit.add(this.detailSplitter);
+      viewSplit.add(this.detailPanel);
+
+      var viewSizer = new VerticalSizer;
+      viewSizer.spacing = 4;
+      viewSizer.add(this.viewToolbar);
+      viewSizer.add(viewSplit, 100);
+
+      this.viewPanel = new Control(this);
+      this.viewPanel.sizer = viewSizer;
+
       var split = new HorizontalSizer;
       split.spacing = 0;
       split.add(this.listPanel);
       split.add(this.listSplitter);
-      split.add(this.previewPanel, 100);
-      split.add(this.detailSplitter);
-      split.add(this.detailPanel);
+      split.add(this.viewPanel, 100);
 
       this.sizer = new VerticalSizer;
       this.sizer.margin = 8;
@@ -2279,7 +2293,30 @@ var MeteorComposerDialog = class extends Dialog {
       this.lockSTFCheck.minWidth =
          this.font.width(this.lockSTFCheck.text) + 20;
 
+      // A ComboBox has a minWidth of zero too - the same trap as the CheckBox
+      // above, and it was walked into anyway. Measured at 65 px in a 490 px
+      // toolbar and 42 px in a 420 px one, for a control whose widest item
+      // ("Unlinked") needs 47 px of text plus the drop-down arrow. So the
+      // longest item was cut at the width the operator actually opens at.
+      //
+      // The floor is the widest item plus room for the arrow, which is what
+      // adjustToContents() would have asked for - it reports 86 - rather than a
+      // number invented here.
+      this.stfCombo.adjustToContents();
+      this.stfCombo.minWidth = this.stfCombo.width;
+
+      // A Label is elastic as well. "STF:" came out at exactly the width of
+      // its text, with nothing to spare.
+      this.stfLabel.minWidth = this.font.width(this.stfLabel.text) + 4;
+
+      // Kept on `this` because it no longer lives in this panel. The two
+      // previews used to carry a header each, side by side, and the operator
+      // reported the left one overlapping itself at the initial window size.
+      // One header above both is wider by the whole detail pane - 777 px at
+      // the minimum window size instead of 490 - and the detail pane's own
+      // controls move a row further in, where 280 px is plenty for them.
       var toolbar = new HorizontalSizer;
+      this.viewToolbar = toolbar;
       toolbar.spacing = 4;
       toolbar.add(this.fitButton);
       toolbar.add(this.zoom11Button);
@@ -2297,8 +2334,6 @@ var MeteorComposerDialog = class extends Dialog {
       toolbar.add(this.frameLabel, 100);
 
       this.previewSizer = new VerticalSizer;
-      this.previewSizer.spacing = 4;
-      this.previewSizer.add(toolbar);
       this.previewSizer.add(this.preview, 100);
 
       // Whenever the preview redraws its frame - a new frame, or a turn - the
