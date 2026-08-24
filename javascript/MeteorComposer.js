@@ -2441,8 +2441,19 @@ var MeteorComposerDialog = class extends Dialog {
    // covers the widths restored from Settings, which are applied before the
    // window has its real size.
    reclampPanes() {
-      this.setListWidth(this.listWidth);
+      // The detail pane gives way first, and the order is the whole point.
+      //
+      // Clamping the list first made it surrender to whatever the detail pane
+      // currently held: widening the detail pane to 510 in a 1180 window left
+      // the list at its floor of 220, and the width the operator had chosen for
+      // it was gone for good. Found by reading the stored settings back
+      // (listWidth 220, detailWidth 510) rather than by looking at the screen.
+      //
+      // The list's width is not arbitrary - there is code that sizes it to the
+      // columns it has to show - while the detail pane is a magnifier that
+      // works at any size. So the magnifier is the one that shrinks.
       this.setDetailWidth(this.detailWidth);
+      this.setListWidth(this.listWidth);
    }
 
    setRotation(degrees) {
@@ -4289,8 +4300,17 @@ var MeteorComposerDialog = class extends Dialog {
                      normalizeRotation(this.preview.rotation));
       Settings.write(SETTINGS_KEY + "/stfMode", DataType.String,
                      this.cache.stfMode);
-      Settings.write(SETTINGS_KEY + "/mask", DataType.String,
-                     JSON.stringify(this.maskSpec()));
+      var maskJSON = JSON.stringify(this.maskSpec());
+      Settings.write(SETTINGS_KEY + "/mask", DataType.String, maskJSON);
+
+      // Said out loud. An operator reported setting a tilt back to zero,
+      // closing, and finding the old value again; the store held the old value,
+      // so the model held it too at this point - but nothing in the log said
+      // what was written, which left the question open. Now it does.
+      console.writeln("<end><cbr>settings saved: stf " + this.cache.stfMode
+                      + ", list " + this.listWidth
+                      + ", detail " + this.detailWidth
+                      + ", mask " + maskJSON);
    }
 
    updateEnabled() {
