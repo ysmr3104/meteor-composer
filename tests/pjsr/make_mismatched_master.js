@@ -73,16 +73,26 @@ function makeRandom(seed) {
    };
 }
 
+// Write a plain array into one channel.
+//
+// Copied from MeteorComposer.js rather than reinvented. The fourth argument of
+// Image.apply() is the TARGET channel; firstChannel and lastChannel refer to
+// the SOURCE, so passing the target there writes nothing for channels 1 and 2
+// and throws nothing either. assign() is not an alternative: it replaces the
+// whole image and leaves a one-channel result.
+function arrayToChannel(image, channel, data) {
+   var channelImage = (new Matrix(data, image.height, image.width)).toImage();
+   image.apply(channelImage, ImageOp.Mov, new Point(0, 0), channel);
+}
+
 // One image out of a list of channel arrays, saved where it was asked for.
 function write(path, channels, W, H, sample, isReal, isColor) {
    var win = new ImageWindow(W, H, channels.length, sample, isReal, isColor,
                              "BrokenMaster");
    win.mainView.beginProcess(UndoFlag.NoSwapFile);
    for (var ch = 0; ch < channels.length; ++ch) {
-      win.mainView.image.selectedChannel = ch;
-      win.mainView.image.assign((new Matrix(channels[ch], H, W)).toImage());
+      arrayToChannel(win.mainView.image, ch, channels[ch]);
    }
-   win.mainView.image.resetSelections();
    win.mainView.endProcess();
    win.saveAs(path, false, false, false, false);
    win.forceClose();
