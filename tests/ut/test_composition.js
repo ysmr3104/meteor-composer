@@ -77,6 +77,18 @@ function makeSub(master, scale, offset, noise, seed) {
 
 // Cut a frame-sized mask down to one rectangle. The composite builds its masks
 // per trail and rectangle-local, so that is the shape addTrailLight takes.
+// Every nth pixel in each direction, with nothing excluded. Used to show what
+// the fit would give if it kept the pixels that hold no data.
+function strideSample(data, width, height, stride) {
+   var out = [];
+   for (var y = 0; y < height; y += stride) {
+      for (var x = 0; x < width; x += stride) {
+         out.push(data[y * width + x]);
+      }
+   }
+   return out;
+}
+
 function localMask(mask, rect, width) {
    var rw = rect.right - rect.left + 1;
    var rh = rect.bottom - rect.top + 1;
@@ -602,6 +614,129 @@ suite("fitIsPlausible", function () {
    ok(!comp.fitIsPlausible({ scale: 47, offset: 0, samples: 5000 },
                            { acceptAnyFit: true }).ok,
       "acceptAnyFit does not change the verdict itself");
+});
+
+suite("a rejection says which of the three things went wrong", function () {
+   // Every case here is a measurement from one real night, so the wording is
+   // pinned against data rather than against an idea of what could happen.
+   // The numbers are in the comment above fitOnGrid.
+
+   // DSC04908 after excluding its missing wedge: 38.7% of the frame is not
+   // there. That is the sentence the operator needs, and it is the one the old
+   // message did not contain - it asked whether the master was right instead.
+   var missing = comp.fitIsPlausible(
+      { scale: 0.1657, levelRatio: 0.9994, samples: 303295,
+        noDataFraction: 0.3873 }, null);
+   ok(!missing.ok, "a frame missing a third of itself is refused");
+   ok(missing.code === "nodata", "under its own code");
+   ok(missing.reason.indexOf("38.7%") >= 0,
+      "and the fraction is in the message: " + missing.reason);
+   // The report that started this said "is this the right master?" and the
+   // reply was "what is that?". A line that ends in a question the operator
+   // cannot answer is not a diagnosis, so none of them may ask one: the
+   // question belongs in the dialog, which offers the three answers with it.
+   var cases = [
+      missing,
+      comp.fitIsPlausible({ scale: 0.097, levelRatio: 0.974, samples: 495075,
+                            noDataFraction: 0.004 }, null),
+      comp.fitIsPlausible({ scale: 0.10, levelRatio: 0.11, samples: 495075,
+                            noDataFraction: 0.004 }, null),
+      comp.fitIsPlausible({ scale: 1.2, levelRatio: 1.0, samples: 10,
+                            noDataFraction: 0 }, null)
+   ];
+   var asking = [];
+   for (var q = 0; q < cases.length; ++q) {
+      if (cases[q].reason.indexOf("?") >= 0) {
+         asking.push(cases[q].code);
+      }
+   }
+   ok(asking.length === 0,
+      "no rejection asks a question instead of stating what it measured"
+      + (asking.length > 0 ? " (" + asking.join(", ") + ")" : ""));
+
+   // The forum case: an undebayered master against debayered frames. The
+   // brightness matches and the detail does not, which is a different fault
+   // with different causes, so it must not be called a brightness difference.
+   var structure = comp.fitIsPlausible(
+      { scale: 0.097, levelRatio: 0.974, samples: 495075,
+        noDataFraction: 0.004 }, null);
+   ok(structure.code === "structure",
+      "detail that does not line up is its own case, got " + structure.code);
+   ok(structure.reason.indexOf("dimmer") < 0,
+      "and it is NOT called dimmer - measured median ratio was 0.974: "
+      + structure.reason);
+
+   // A frame that really is dim: both numbers agree, so the brightness IS the
+   // explanation and saying so is right.
+   var dim = comp.fitIsPlausible(
+      { scale: 0.10, levelRatio: 0.11, samples: 495075,
+        noDataFraction: 0.004 }, null);
+   ok(dim.code === "level", "agreement means the level explains it");
+   ok(dim.reason.indexOf("dimmer") >= 0, "and here dimmer is the right word");
+
+   // The frames that were accepted on that night, so the check is not simply
+   // strict: slope 1.00 to 1.29 against a level ratio of 0.99 to 1.03.
+   ok(comp.fitIsPlausible({ scale: 1.0515, levelRatio: 1.0086, samples: 492406,
+                            noDataFraction: 0.0042 }, null).ok,
+      "a real accepted frame still passes");
+   ok(comp.fitIsPlausible({ scale: 1.2481, levelRatio: 0.9969, samples: 494256,
+                            noDataFraction: 0.0024 }, null).ok,
+      "including the widest slope of the night");
+
+   // The threshold between them, stated as a property rather than a number:
+   // the widest disagreement among accepted frames must stay inside it, and
+   // the refused frame's disagreement must not.
+   ok(comp.levelExplainsScale(1.2481, 0.9969),
+      "the widest accepted disagreement counts as agreement");
+   ok(!comp.levelExplainsScale(0.097, 0.974),
+      "and a factor of ten does not");
+});
+
+suite("fitOnGrid excludes pixels that hold no data", function () {
+   // The bug this fixes: a registered frame has a wedge where rotation moved
+   // it off the reference, and it is zero there while the master has sky. Each
+   // such pixel enters the fit as (sky, 0) and drags the slope down in
+   // proportion to how much of the frame is missing. It cost a real frame its
+   // place in a composite and biased every other frame's fit low.
+   var W = 200, H = 150;
+   var n = W * H;
+   var master = makeMaster(n, 21);
+   var sub = makeSub(master, 1.1, 0.002, 0, 23);
+
+   var clean = comp.fitOnGrid(master, sub, new Float32Array(n), W, H, null);
+   close(clean.scale, 1.1, 1e-3, "with nothing missing the slope is recovered");
+   close(clean.noDataFraction, 0, 1e-9, "and nothing is reported missing");
+
+   // Blank the left 40% of the frame in the sub only, as registration does.
+   var cut = Math.floor(W * 0.4);
+   for (var y = 0; y < H; ++y) {
+      for (var x = 0; x < cut; ++x) {
+         sub[y * W + x] = 0;
+      }
+   }
+
+   var withHole = comp.fitOnGrid(master, sub, new Float32Array(n), W, H, null);
+   close(withHole.scale, 1.1, 1e-2,
+         "the slope survives 40% of the frame being missing");
+   ok(withHole.noDataFraction > 0.35 && withHole.noDataFraction < 0.45,
+      "and the missing fraction is reported: " + withHole.noDataFraction);
+   ok(withHole.samples < clean.samples,
+      "on fewer samples, because the missing ones were dropped");
+
+   // The level ratio has to be measured on the surviving pixels too. On real
+   // data the wedge dragged it from 1.00 down to 0.61, which read as "this
+   // frame is dim" when the frame was not dim at all.
+   close(withHole.levelRatio, clean.levelRatio, 2e-2,
+         "and the level ratio is unaffected by the hole");
+
+   // Without the exclusion the slope would be wrong by roughly the missing
+   // fraction. Asserted so that removing the guard fails a test rather than
+   // quietly changing every composite.
+   var biased = comp.linearFit(strideSample(master, W, H, 7),
+                               strideSample(sub, W, H, 7));
+   ok(biased.scale < 0.8,
+      "keeping them would put the slope at " + biased.scale.toFixed(3)
+      + " instead of 1.1");
 });
 
 //----------------------------------------------------------------------------

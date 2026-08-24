@@ -4040,15 +4040,37 @@ var MeteorComposerDialog = class extends Dialog {
          return this.mismatchPolicy;
       }
 
-      var cause = outcome.code === "samples"
-         ? "The trails cover so much of the frame that there is almost no sky "
-         + "left to measure the two against each other. A corridor width or a "
-         + "candidate count far larger than usual does this."
-         : "A frame and its master should differ by roughly a constant factor "
-         + "near 1. A factor this far from 1 usually means the two do not "
-         + "belong together: a master from another session or another filter, "
-         + "a master that has already been stretched, or frames shot at a "
-         + "different exposure or ISO.";
+      var cause;
+      if (outcome.code === "nodata") {
+         cause = "Registration moved this frame far enough off the reference "
+               + "that a large part of it is empty, and the fit has only the "
+               + "overlap to work with. The frames at the very beginning and "
+               + "the very end of a night are the ones this happens to. If "
+               + "the meteor itself is inside the overlap, the frame may still "
+               + "be worth compositing.";
+      } else if (outcome.code === "samples") {
+         cause = "The trails cover so much of the frame that there is almost "
+               + "no sky left to measure the two against each other. A "
+               + "corridor width or a candidate count far larger than usual "
+               + "does this.";
+      } else if (outcome.code === "level") {
+         cause = "A frame and its master should sit at roughly the same sky "
+               + "level. This far apart usually means a different exposure or "
+               + "ISO, or a master that has already been stretched.";
+      } else {
+         cause = "The two are at the same brightness, so this is not an "
+               + "exposure difference: the frame's detail does not follow the "
+               + "master's. The usual causes are a master that has not been "
+               + "debayered while the frames have (or the reverse), a "
+               + "registration that failed on this frame, and a frame that is "
+               + "trailed, defocused or clouded.";
+      }
+
+      // How many frames it happens to is the diagnosis the operator can make
+      // and this loop cannot: it is asked on the first failure, before there
+      // is anything to count.
+      cause += "\n\nIf this happens on every frame, the master is what to "
+             + "check. If it happens on one or two, those frames are.";
 
       var box = new MessageBox(
            file + " does not match the master:\n"
@@ -4216,6 +4238,25 @@ var MeteorComposerDialog = class extends Dialog {
                   console.warningln("LEFT OUT - " + mismatch);
                   continue;
                }
+               if (subImage.numberOfChannels !== channels) {
+                  // Named rather than left to the fit, because the fit cannot
+                  // name it. A one-channel master against three-channel frames
+                  // is a CFA mosaic that was never debayered, and this loop
+                  // would otherwise take the master's channel count, fit the
+                  // mosaic against the frame's red, and report a fit scale -
+                  // which is what a forum user was shown for every frame of
+                  // their night.
+                  //
+                  // Same size, so the size check above cannot catch it:
+                  // debayering does not change the pixel dimensions.
+                  var counts = "the master has " + channels + " channel"
+                             + (channels === 1 ? "" : "s") + " and this frame "
+                             + "has " + subImage.numberOfChannels
+                             + " - one of the two has not been debayered";
+                  skipped.push(job.file + ": " + counts);
+                  console.warningln("LEFT OUT - " + counts);
+                  continue;
+               }
 
                var subChannels = [];
                for (ch = 0; ch < channels; ++ch) {
@@ -4272,6 +4313,15 @@ var MeteorComposerDialog = class extends Dialog {
                                + "  peak=" + peaks.join("/")
                                + "  mask=" + outcome.trails[0].coverage.touched + "px"
                                + "  (" + (Date.now() - frameStarted) + " ms)");
+               // Reported even when the fit passed. A frame missing a third of
+               // itself is worth knowing about before the composite is judged,
+               // and on the night measured the normal figure was under 0.5%.
+               if (outcome.fits[0].noDataFraction >= 0.05) {
+                  console.warningln("    "
+                     + (100 * outcome.fits[0].noDataFraction).toFixed(1)
+                     + "% of this frame has no data; the fit used the overlap "
+                     + "only");
+               }
                if (outcome.warning !== null) {
                   forced.push(job.file + ": " + outcome.warning);
                   console.warningln("    FORCED IN - " + outcome.warning);

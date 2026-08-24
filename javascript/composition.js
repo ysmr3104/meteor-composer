@@ -157,27 +157,67 @@ function linearFit(source, reference) {
 }
 
 // Fit the master to the sub over the whole frame, on a strided grid, skipping
-// everything the masks cover.
+// everything the masks cover and everywhere either side has no data.
 //
 // The masks have to be skipped: a fit that included the trail would partly
 // absorb the meteor, and the light that is then added - which is what is left
 // over - would come out smaller than it is.
+//
+// NO DATA has to be skipped for a different and larger reason.
+//
+// A registered frame carries a wedge where rotation and shift moved it off the
+// reference, and those pixels are zero. The master is an integration of the
+// whole night, so it has sky there. Every such pixel enters the fit as
+// (master = sky, sub = 0) and pulls the slope towards zero - not as noise, but
+// as a systematic bias proportional to how much of the frame is missing.
+//
+// Measured on one night, per frame, fraction of pixels with no data and the
+// slope with and without them:
+//
+//   DSC04904   38.76%   0.176 -> 0.310     (was refused, now accepted)
+//   DSC04908   38.73%   0.097 -> 0.166     (still refused, and it should be)
+//   DSC04944    0.42%   1.052 -> 1.040
+//   DSC04972    0.39%   1.010 -> 0.999
+//   DSC05542    0.24%   1.153 -> 1.147
+//
+// So this was never only a message problem. The one frame the composite
+// refused was refused because 39% of it was missing, and the operator was
+// asked whether the master was right. Worse, the frames it ACCEPTED had their
+// slope biased low by their own missing fraction, and a slope that is 1.2% low
+// leaves a residual of the order of the master's own noise - painted into the
+// shape of the mask.
+//
+// Zero is the test, not a tolerance: after calibration the sky sits around
+// 8.5e-3, so a pixel at or below zero is missing data rather than dark sky.
 function fitOnGrid(master, sub, mask, width, height, options) {
    var opt = mergeComposeOptions(options);
    var stride = opt.fitStride > 0 ? Math.floor(opt.fitStride) : 1;
    var x = [], y = [];
+   var visited = 0, masked = 0, missing = 0;
    for (var iy = 0; iy < height; iy += stride) {
       var row = iy * width;
       for (var ix = 0; ix < width; ix += stride) {
          var i = row + ix;
+         ++visited;
          if (mask[i] > 0) {
+            ++masked;
+            continue;
+         }
+         if (!(master[i] > 0) || !(sub[i] > 0)) {
+            ++missing;
             continue;
          }
          x.push(master[i]);
          y.push(sub[i]);
       }
    }
-   return linearFit(x, y);
+   var fit = linearFit(x, y);
+   // Reported, not just acted on: "39% of this frame has no data" is the one
+   // sentence that explains the rejection to whoever has to fix it.
+   fit.visited = visited;
+   fit.maskedFraction = visited > 0 ? masked / visited : 0;
+   fit.noDataFraction = visited > 0 ? missing / visited : 0;
+   return fit;
 }
 
 // The sky level the fit failed to match, measured just outside one trail's
@@ -203,6 +243,14 @@ function localBackground(master, sub, fit, mask, width, height, rect, options) {
       for (var x = left; x <= right; x += stride) {
          var i = row + x;
          if (mask[i] > 0) {
+            continue;
+         }
+         // No data is not a sky level. A ring that reaches into the missing
+         // wedge of a registered frame would read the residual there - which
+         // is minus the whole sky - and the median is only robust while the
+         // wedge is the minority of the ring. Excluded for the same reason the
+         // fit excludes it, so that the two agree about which pixels exist.
+         if (!(master[i] > 0) || !(sub[i] > 0)) {
             continue;
          }
          var v = sub[i] - (fit.scale * master[i] + fit.offset);
@@ -491,6 +539,7 @@ function fitIsPlausible(fit, options) {
    var minScale = opt.minScale === undefined ? 0.2 : opt.minScale;
    var maxScale = opt.maxScale === undefined ? 5.0 : opt.maxScale;
    var minSamples = opt.minSamples === undefined ? 100 : opt.minSamples;
+   var minNoData = opt.minNoData === undefined ? 0.05 : opt.minNoData;
 
    if (fit.samples < minSamples) {
       return { ok: false, code: "samples",
@@ -502,7 +551,24 @@ function fitIsPlausible(fit, options) {
       return { ok: true, code: null, reason: null };
    }
 
-   // Same rejection, two different things to say about it.
+   // Same rejection, three different things to say about it, in the order of
+   // how actionable they are.
+   //
+   // Missing data first, because it is the one an operator can see and fix,
+   // and because it is what actually happened on the only real night measured.
+   // Normal frames of that night were missing 0.24% to 0.42% of their pixels
+   // and the two refused ones were missing 38.7%, so anything above a few per
+   // cent is the story rather than a detail.
+   var missing = fit.noDataFraction;
+   if (isFinite(missing) && missing >= minNoData) {
+      return { ok: false, code: "nodata",
+               reason: (100 * missing).toFixed(1) + "% of this frame has no "
+                     + "data - registration moved it that far off the "
+                     + "reference - and what overlaps fits at "
+                     + fit.scale.toFixed(3)
+                     + " where about 1 is expected" };
+   }
+
    if (levelExplainsScale(fit.scale, fit.levelRatio)) {
       return { ok: false, code: "level",
                reason: "the frame " + describeRatio(fit.scale)
