@@ -675,21 +675,51 @@ suite("a rejection says which of the three things went wrong", function () {
    ok(dim.reason.indexOf("dimmer") >= 0, "and here dimmer is the right word");
 
    // The frames that were accepted on that night, so the check is not simply
-   // strict: slope 1.00 to 1.29 against a level ratio of 0.99 to 1.03.
-   ok(comp.fitIsPlausible({ scale: 1.0515, levelRatio: 1.0086, samples: 492406,
+   // strict: slope 0.99 to 1.25 against a level ratio of 0.99 to 1.02.
+   ok(comp.fitIsPlausible({ scale: 1.0395, levelRatio: 1.0139, samples: 492406,
                             noDataFraction: 0.0042 }, null).ok,
       "a real accepted frame still passes");
-   ok(comp.fitIsPlausible({ scale: 1.2481, levelRatio: 0.9969, samples: 494256,
+   ok(comp.fitIsPlausible({ scale: 1.2422, levelRatio: 0.9985, samples: 494256,
                             noDataFraction: 0.0024 }, null).ok,
       "including the widest slope of the night");
 
    // The threshold between them, stated as a property rather than a number:
-   // the widest disagreement among accepted frames must stay inside it, and
-   // the refused frame's disagreement must not.
-   ok(comp.levelExplainsScale(1.2481, 0.9969),
-      "the widest accepted disagreement counts as agreement");
+   // the widest disagreement among frames that composited correctly must stay
+   // inside it, and the broken ones' must not.
+   ok(comp.levelExplainsScale(1.2422, 0.9985),
+      "the widest correct disagreement counts as agreement");
+   ok(!comp.levelExplainsScale(0.3103, 0.9995),
+      "and 3.2 does not");
    ok(!comp.levelExplainsScale(0.097, 0.974),
-      "and a factor of ten does not");
+      "nor does 10");
+
+   // A slope INSIDE the accepted range is not enough on its own. DSC04904
+   // measured 0.310 against a sky level of 0.9995 - inside 0.2 to 5.0, and
+   // yet a fit that paints stars: the offset absorbs the mean, so where the
+   // master reads 0.5 the fit predicts 0.161 against a true 0.525 and leaves
+   // +0.36 for the mask to lay down.
+   var inRangeButWrong = comp.fitIsPlausible(
+      { scale: 0.3103, levelRatio: 0.9995, samples: 303138,
+        noDataFraction: 0.0 }, null);
+   ok(!inRangeButWrong.ok,
+      "a slope inside the range is still refused when the level disagrees");
+   ok(inRangeButWrong.code === "structure",
+      "and it is the structure case, got " + inRangeButWrong.code);
+
+   // An unmeasurable level ratio must not reject anything. It is a missing
+   // measurement, not a failed one, and the absolute range still applies.
+   ok(comp.fitIsPlausible({ scale: 0.31, levelRatio: NaN, samples: 495075,
+                            noDataFraction: 0.004 }, null).ok,
+      "no level ratio means the range decides alone");
+   ok(!comp.fitIsPlausible({ scale: 0.01, levelRatio: NaN, samples: 495075,
+                             noDataFraction: 0.004 }, null).ok,
+      "and the range still rejects what it always rejected");
+
+   // A frame that is genuinely dim in the same proportion is trustworthy at
+   // whatever slope it takes: the two numbers agree, so the fit is real.
+   ok(comp.fitIsPlausible({ scale: 0.30, levelRatio: 0.31, samples: 495075,
+                            noDataFraction: 0.004 }, null).ok,
+      "agreement is enough for a dim frame inside the range");
 });
 
 suite("fitOnGrid excludes pixels that hold no data", function () {

@@ -506,14 +506,16 @@ function describeRatio(ratio) {
 // else entirely - one of the two not debayered, a registration that failed,
 // a trailed or clouded frame.
 //
-// The factor of 1.5 comes from the measurement, not from taste: on a real
-// night the accepted frames ran slope 1.00 to 1.29 against a level ratio of
-// 0.99 to 1.03, so the widest honest disagreement observed was 1.29. The
-// frame that was refused disagreed by a factor of 10.
+// The factor comes from the measurement, not from taste. On a real night the
+// frames that composited correctly ran slope 0.99 to 1.25 against a level
+// ratio of 0.99 to 1.02, so the widest honest disagreement observed was 1.25.
+// The frames that were broken disagreed by 3.2 and 6.0. Two sits an order of
+// magnitude clear of the first and well below the second, and only one night
+// has been measured, so it is set wide on purpose.
 //
 // A var, not a #define: this file has to run under Node for its tests, and the
 // PixInsight preprocessor is not there to expand anything.
-var LEVEL_AGREEMENT = 1.5;
+var LEVEL_AGREEMENT = 2.0;
 
 function levelExplainsScale(scale, levelRatio) {
    if (!isFinite(scale) || !isFinite(levelRatio)
@@ -526,10 +528,23 @@ function levelExplainsScale(scale, levelRatio) {
 
 // Whether a fit looks trustworthy.
 //
-// A sub and a master of the same sky through the same optics should differ by
-// roughly a constant factor near 1. A slope far from 1 means something else is
-// going on, and compositing anyway paints whatever the fit leaves behind into
-// the shape of the mask.
+// Two questions, not one.
+//
+//   Is the slope in a range that could be a real exposure difference?
+//   Does the slope agree with the sky level ratio?
+//
+// The second is the one that matters and it was missing. A slope inside the
+// range is not enough: on real data a frame whose sky level matched the
+// master's exactly fitted at 0.31, and that pair paints stars. Work it
+// through - offset = mean - 0.31 * mean = 0.69 * mean, so at a star where the
+// master reads 0.5 the fit predicts 0.161 against a true 0.525, leaving a
+// residual of +0.36 for the mask to lay into the result. It would have looked
+// like a mask bug.
+//
+// When the two numbers agree, the frame really is dimmer or brighter and the
+// fit can be trusted at whatever value it takes. When they disagree, the frame
+// is at the master's brightness and its detail does not follow it, and no
+// slope is trustworthy.
 //
 // `code` names the failure so that a caller can explain the cause without
 // matching on the wording; `reason` is one line, because the caller lists it
@@ -547,7 +562,15 @@ function fitIsPlausible(fit, options) {
                      + "measure this frame against the master, and at least "
                      + minSamples + " are needed" };
    }
-   if (fit.scale >= minScale && fit.scale <= maxScale) {
+
+   // The level ratio is not always available - a master whose mean is zero
+   // has none - and an unavailable measurement must not reject anything. The
+   // absolute range carries the check on its own in that case.
+   var levelKnown = isFinite(fit.levelRatio) && fit.levelRatio > 0;
+   var agrees = !levelKnown || levelExplainsScale(fit.scale, fit.levelRatio);
+   var inRange = fit.scale >= minScale && fit.scale <= maxScale;
+
+   if (inRange && agrees) {
       return { ok: true, code: null, reason: null };
    }
 
@@ -557,7 +580,7 @@ function fitIsPlausible(fit, options) {
    // Missing data first, because it is the one an operator can see and fix,
    // and because it is what actually happened on the only real night measured.
    // Normal frames of that night were missing 0.24% to 0.42% of their pixels
-   // and the two refused ones were missing 38.7%, so anything above a few per
+   // and the two broken ones were missing 38.7%, so anything above a few per
    // cent is the story rather than a detail.
    var missing = fit.noDataFraction;
    if (isFinite(missing) && missing >= minNoData) {
@@ -569,20 +592,21 @@ function fitIsPlausible(fit, options) {
                      + " where about 1 is expected" };
    }
 
-   if (levelExplainsScale(fit.scale, fit.levelRatio)) {
-      return { ok: false, code: "level",
-               reason: "the frame " + describeRatio(fit.scale)
-                     + " across the whole sky (fit scale "
-                     + fit.scale.toFixed(3) + ", sky level "
-                     + fit.levelRatio.toFixed(3)
-                     + " of the master's; the accepted range is "
-                     + minScale + " to " + maxScale + ")" };
+   if (!agrees) {
+      return { ok: false, code: "structure",
+               reason: "the frame sits at " + describeLevel(fit.levelRatio)
+                     + " of the master's sky level, but only "
+                     + fit.scale.toFixed(3) + " of its detail lines up - the "
+                     + "two do not show the same sky" };
    }
-   return { ok: false, code: "structure",
-            reason: "the frame sits at " + describeLevel(fit.levelRatio)
-                  + " of the master's sky level, but only "
-                  + fit.scale.toFixed(3) + " of its detail lines up - the two "
-                  + "do not show the same sky" };
+
+   return { ok: false, code: "level",
+            reason: "the frame " + describeRatio(fit.scale)
+                  + " across the whole sky (fit scale "
+                  + fit.scale.toFixed(3) + ", sky level "
+                  + describeLevel(fit.levelRatio)
+                  + " of the master's; the accepted range is "
+                  + minScale + " to " + maxScale + ")" };
 }
 
 // The level ratio as a bare number, or a word when there is no number.
