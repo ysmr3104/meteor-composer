@@ -5,10 +5,10 @@
       <brief_description>Detect, screen and composite meteors in PixInsight</brief_description>
    </description>
    <platform os="all" arch="noarch" version="1.9.4:9.9.9">
-      <package fileName="MeteorComposer-1.1.0.zip"
-               sha1="69b5351b8426c6c4d3b566e7ec543fb490a34c74"
+      <package fileName="MeteorComposer-1.2.0.zip"
+               sha1="8bd94c5d4ea558f8d10461627c32f8a766418505"
                type="script"
-               releaseDate="20260829">
+               releaseDate="20260830">
          <title>MeteorComposer</title>
          <description>
             <p>Detect meteors across a night of registered frames, screen the candidates by eye, and composite the accepted ones onto a master light.</p>
