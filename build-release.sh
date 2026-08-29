@@ -61,11 +61,28 @@ echo "#include と MODULES の一致を確認しました（${#MODULES[@]} フ�
 #
 # 壊れたものを配布しないための最低限の関門です。実データを使う評価は
 # tests/eval/ にあり、そちらは別途 tools/run-remote.sh で走らせます。
+# node があることを先に確かめます。無いまま回すと全スイートが失敗し、
+# 「テストが全部落ちた」と報告されます。原因と違うことを言う失敗であり、
+# 実際に ssh 越しのビルドで一度これを踏みました（非対話 zsh の PATH は
+# /usr/bin:/bin:/usr/sbin:/sbin だけで、Homebrew の node が入りません）。
+# 全部落ちたときは、まずコードではなく実行環境を疑うべきです。
+if ! command -v node > /dev/null 2>&1; then
+    echo "エラー: node が見つかりません。" >&2
+    echo "       Small テストが実行できないためビルドを中止します。" >&2
+    echo "       ssh から実行している場合、非対話シェルの PATH には" >&2
+    echo "       Homebrew が入りません。ログインシェル経由で実行してください:" >&2
+    echo "         ssh <host> 'zsh -lc \"cd <repo> && bash build-release.sh\"'" >&2
+    exit 1
+fi
+
 echo "Small テストを実行中..."
 FAILED=0
 for f in "${SCRIPT_DIR}"/tests/ut/*.js; do
-    if ! node "$f" > /dev/null 2>&1; then
+    # 失敗したスイートの出力は捨てません。どのアサーションが落ちたのかは
+    # ここでしか見られず、「失敗しました」だけでは次の一手が決まりません。
+    if ! OUTPUT=$(node "$f" 2>&1); then
         echo "エラー: $(basename "$f") が失敗しました" >&2
+        echo "$OUTPUT" | tail -20 >&2
         FAILED=1
     fi
 done
