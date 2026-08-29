@@ -1857,7 +1857,9 @@ var MeteorComposerDialog = class extends Dialog {
          "<p>Detection reads the <b>registered</b> frames and the composite is "
        + "built on the master light. The meteors land where they were among "
        + "the stars, so the radiant is visible.</p>"
-       + "<p>This is the tracked case, and it is unchanged.</p>";
+       + "<p>Tracked exposures, and fixed-tripod ones short enough for "
+       + "StarAlignment to solve. This is what the script did before it could "
+       + "do anything else, and it is unchanged.</p>";
       this.skyRadio.checked = true;
       this.skyRadio.onCheck = function (checked) {
          if (checked) {
@@ -1872,9 +1874,11 @@ var MeteorComposerDialog = class extends Dialog {
        + "built on one of those frames. The meteors land where they were "
        + "against the landscape, which is the picture a fixed tripod is "
        + "usually taken for.</p>"
-       + "<p>Nothing is aligned, and nothing needs to be: the tripod did not "
-       + "move, so a meteor left where it was recorded is already in the right "
-       + "place. Registering a long fixed-tripod night instead loses frames "
+       + "<p>A fixed tripod only. Nothing is aligned, and nothing needs to be: "
+       + "the camera did not move, so a meteor left where it was recorded is "
+       + "already in the right place. On a tracked mount the landscape moves "
+       + "between frames instead, and this would put the meteors in the wrong "
+       + "place against it. Registering a long fixed-tripod night instead loses frames "
        + "outright and empties a large part of the ones that survive - "
        + "measured at 327 frames lost out of 1045 and 36.5% of each survivor "
        + "empty - and stretches the landscape into an arc in the master.</p>";
