@@ -27,6 +27,7 @@ VERSION_RANGE="1.9.4:9.9.9"
 # #include はテキスト連結なので、1 つでも欠けるとスクリプトが起動しません。
 MODULES=(
     paths.js
+    coordinate_system.js
     detection_core.js
     candidate_ops.js
     trail_colour.js

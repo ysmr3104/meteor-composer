@@ -180,6 +180,39 @@ suite("radio buttons are set as a pair, from one place", function () {
    }
 });
 
+suite("the release package ships every module", function () {
+   // build-release.sh keeps its own list of files to put in the zip, and it
+   // compares that list with the #include lines before building. That check is
+   // right, but it only runs at release time - which is where this was found,
+   // with the signing already done and a release half started.
+   //
+   // The cost of getting it wrong is the worst kind: #include is textual
+   // concatenation, so a package missing one module is built without complaint
+   // and fails on the user's machine at the first call into it, with the error
+   // going only to the Process Console.
+   var script = fs.readFileSync(SCRIPT, "utf8");
+   var buildPath = path.join(__dirname, "..", "..", "build-release.sh");
+   ok(fs.existsSync(buildPath), "build-release.sh is there");
+   var build = fs.readFileSync(buildPath, "utf8");
+
+   var included = (script.match(/^#include\s+"([^"]+)"/gm) || [])
+      .map(function (line) { return /"([^"]+)"/.exec(line)[1]; })
+      .sort();
+
+   var listBlock = /MODULES=\(([\s\S]*?)\)/.exec(build);
+   ok(listBlock !== null, "build-release.sh declares MODULES");
+   var listed = listBlock[1].split(/\s+/)
+      .filter(function (name) { return name.length > 0; })
+      .sort();
+
+   ok(included.length > 0, "there are includes to ship");
+   ok(included.join(",") === listed.join(","),
+      "every #include is in MODULES and nothing else is"
+      + (included.join(",") === listed.join(",") ? ""
+         : "\n        #include: " + included.join(", ")
+         + "\n        MODULES:  " + listed.join(", ")));
+});
+
 //----------------------------------------------------------------------------
 
 console.log("\n============================================");
