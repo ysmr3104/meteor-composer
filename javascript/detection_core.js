@@ -42,6 +42,10 @@ function downsample(field, factor, mode, mask) {
    var outW = Math.max(1, Math.ceil(field.width / factor));
    var outH = Math.max(1, Math.ceil(field.height / factor));
    var out = makeField(outW, outH);
+   // Which blocks had anything to average. Blocks that were entirely masked
+   // have no value of their own, and the difference between "no value" and
+   // "the value zero" is what fillMissingBlocks exists for.
+   out.known = new Uint8Array(outW * outH);
    var block = [];
 
    for (var by = 0; by < outH; ++by) {
@@ -72,15 +76,102 @@ function downsample(field, factor, mode, mask) {
                ++n;
             }
          }
-         // A block with nothing usable in it is left at zero. Nothing is
-         // detected there either, so the value cannot matter; what would
-         // matter is inventing one.
-         out.data[by * outW + bx] = (mode === "median")
-            ? (block.length > 0 ? medianOf(block) : 0)
-            : (n > 0 ? sum / n : 0);
+         var have = (mode === "median") ? block.length > 0 : n > 0;
+         out.known[by * outW + bx] = have ? 1 : 0;
+         out.data[by * outW + bx] = !have ? 0
+            : (mode === "median" ? medianOf(block) : sum / n);
       }
    }
    return out;
+}
+
+// Give the blocks that had nothing in them a value taken from their
+// neighbours.
+//
+// Leaving them at zero was the original behaviour, on the reasoning that
+// nothing is detected inside a masked region so the value cannot matter. That
+// reasoning is wrong, and the cost was measured: with a `bottom 21%` exclusion
+// mask on 1045 fixed-tripod frames, a straight line spanning the entire width
+// of the field was detected in 1041 of them, four samples above the mask
+// boundary. Moving the mask moved the line with it - 10% put it at y=445, 21%
+// at y=395, 40% at y=299 - and removing the mask removed the line.
+//
+// The mechanism is the expansion below. It is bilinear, so a block of zero
+// under the boundary pulls the model down for the real samples ABOVE it.
+// Subtracting a background that is too low leaves the sky standing above zero
+// in a line along that edge - which is precisely the failure downsample's own
+// comment describes for a block straddling the edge, reappearing one block up.
+//
+// Filled from the nearest blocks that do have a value, spreading outwards a
+// ring at a time. Within one pass only values that were already known are
+// read, so the fill cannot feed on itself and drift.
+//
+// Nothing is invented that the neighbours do not already say, and nothing is
+// detected inside the filled region anyway: the mask still keeps those samples
+// out of the threshold. What changes is only that the region stops dragging
+// its surroundings.
+function fillMissingBlocks(coarse) {
+   var known = coarse.known;
+   if (!known) {
+      return coarse;
+   }
+   var data = coarse.data;
+   var w = coarse.width, h = coarse.height;
+   var missing = 0, i;
+   for (i = 0; i < known.length; ++i) {
+      if (!known[i]) {
+         ++missing;
+      }
+   }
+   // Nothing to fill, or nothing to fill from.
+   if (missing === 0 || missing === known.length) {
+      return coarse;
+   }
+
+   var cur = new Uint8Array(known);
+   while (missing > 0) {
+      var next = new Uint8Array(cur);
+      var filledThisPass = 0;
+      for (var y = 0; y < h; ++y) {
+         for (var x = 0; x < w; ++x) {
+            var at = y * w + x;
+            if (cur[at]) {
+               continue;
+            }
+            var sum = 0, n = 0;
+            for (var dy = -1; dy <= 1; ++dy) {
+               var ny = y + dy;
+               if (ny < 0 || ny >= h) {
+                  continue;
+               }
+               for (var dx = -1; dx <= 1; ++dx) {
+                  var nx = x + dx;
+                  if (nx < 0 || nx >= w || (dx === 0 && dy === 0)) {
+                     continue;
+                  }
+                  var at2 = ny * w + nx;
+                  if (cur[at2]) {
+                     sum += data[at2];
+                     ++n;
+                  }
+               }
+            }
+            if (n > 0) {
+               data[at] = sum / n;
+               next[at] = 1;
+               ++filledThisPass;
+            }
+         }
+      }
+      if (filledThisPass === 0) {
+         // Unreachable while at least one block is known and the grid is
+         // connected, but a loop that cannot end is worse than a gap.
+         break;
+      }
+      missing -= filledThisPass;
+      cur = next;
+   }
+   return coarse;
 }
 
 // Bilinear expansion back to a target size. Used to turn a coarse background
@@ -123,7 +214,7 @@ function upsample(field, width, height) {
 // a small fraction of any block it crosses, so it does not survive into the
 // model and is therefore not subtracted away from the residual.
 function removeBackground(field, factor, mask) {
-   var coarse = downsample(field, factor, "median", mask);
+   var coarse = fillMissingBlocks(downsample(field, factor, "median", mask));
    var model = upsample(coarse, field.width, field.height);
    var out = makeField(field.width, field.height);
    for (var i = 0; i < field.data.length; ++i) {
@@ -688,6 +779,7 @@ if (typeof module !== "undefined") {
    module.exports = {
       makeField: makeField,
       downsample: downsample,
+      fillMissingBlocks: fillMissingBlocks,
       upsample: upsample,
       removeBackground: removeBackground,
       medianOf: medianOf,
