@@ -39,12 +39,18 @@ function directoryOf(path) {
    return cut > 0 ? trimmed.slice(0, cut) : "";
 }
 
+// The stage directories WBPP writes frames into. A ground-referenced session
+// reads `debayered` rather than `registered` (docs/requirements.md 3.4), and
+// both are the operator's input data, so both are places to write out of.
+var FRAME_STAGE_DIRS = ["registered", "debayered"];
+
 // Where to write, guessed from where the frames are.
 //
-// WBPP lays the frames out under <root>/registered/<group>, so the group's
-// parent is `registered` and the root is one level above that. Writing into
-// either the group or `registered` would put generated files among the
-// calibrated frames, so the root is the answer when the layout is recognised.
+// WBPP lays the frames out under <root>/<stage>/<group>, so the group's
+// parent is the stage directory and the root is one level above that. Writing
+// into either the group or the stage directory would put generated files among
+// the operator's frames, so the root is the answer when the layout is
+// recognised.
 //
 // A guess, and a visible one: it lands in a field the operator can read and
 // change, which is the difference between a wrong default and a wrong path
@@ -57,7 +63,7 @@ function defaultOutputDir(framesDir) {
    if (parent.length === 0) {
       return framesDir;
    }
-   if (baseName(parent).toLowerCase() === "registered") {
+   if (FRAME_STAGE_DIRS.indexOf(baseName(parent).toLowerCase()) >= 0) {
       var root = directoryOf(parent);
       if (root.length > 0) {
          return root;
@@ -101,6 +107,7 @@ function frameTag(fileName) {
 
 if (typeof module !== "undefined") {
    module.exports = {
+      FRAME_STAGE_DIRS: FRAME_STAGE_DIRS,
       isRealXisf: isRealXisf,
       baseName: baseName,
       directoryOf: directoryOf,

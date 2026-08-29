@@ -19,10 +19,11 @@
 // Console.
 //============================================================================
 
-#define VERSION "1.1.0"
+#define VERSION "1.2.0"
 #define TITLE   "MeteorComposer"
 
 #include "paths.js"
+#include "coordinate_system.js"
 #include "detection_core.js"
 #include "candidate_ops.js"
 #include "trail_colour.js"
@@ -1255,12 +1256,19 @@ var ModeDialog = class extends Dialog {
 // Both fields are editable text, so a path can be typed or pasted. That is not
 // a nicety: it is the way out when a file dialog will not cooperate.
 var ComposeDialog = class extends Dialog {
-   constructor(meteorCount, masterGuess, outputGuess) {
+   constructor(meteorCount, masterGuess, outputGuess, coordinateSystem) {
       super();
 
       var self = this;
       this.masterPath = masterGuess || "";
       this.outputPath = outputGuess || "";
+      this.coordinateSystem = normaliseCoordinateSystem(coordinateSystem);
+      var ground = isGroundReferenced(this.coordinateSystem);
+      // What the meteors are drawn onto. In a ground-referenced session it is
+      // one of the frames themselves, so calling it a master light would be
+      // wrong in the field the operator is being asked to fill in
+      // (requirements 3.4).
+      this.noun = ground ? "background" : "master light";
 
       this.windowTitle = "Compose meteor composite";
 
@@ -1269,24 +1277,36 @@ var ComposeDialog = class extends Dialog {
       this.infoLabel.wordWrapping = true;
       this.infoLabel.text =
          "<p><b>" + meteorCount + " accepted meteor"
-       + (meteorCount === 1 ? "" : "s") + "</b> will be added to the master "
-       + "light. The master is not modified: the result is written to the "
-       + "output file, with its mask beside it.</p>";
+       + (meteorCount === 1 ? "" : "s") + "</b> will be added to the "
+       + this.noun + ". The " + this.noun + " is not modified: the result is "
+       + "written to the output file, with its mask beside it.</p>"
+       + (ground
+            ? "<p>Ground-referenced: the meteors are placed by the pixel they "
+            + "were recorded on, so they land where they were against the "
+            + "landscape. Nothing is aligned.</p>"
+            : "");
       this.infoLabel.setMinWidth(560);
 
       var labelWidth = 90;
 
       this.masterLabel = new Label(this);
-      this.masterLabel.text = "Master light:";
+      this.masterLabel.text = backgroundLabel(this.coordinateSystem);
       this.masterLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
       this.masterLabel.setFixedWidth(labelWidth);
 
       this.masterEdit = new Edit(this);
       this.masterEdit.text = this.masterPath;
-      this.masterEdit.toolTip =
-         "<p>The master light the meteors are added to. Must have the same "
-       + "dimensions as the registered frames, so use the uncropped master: an "
-       + "autocropped one would put every mask in the wrong place.</p>";
+      this.masterEdit.toolTip = ground
+         ? "<p>The image the meteors are drawn onto. One of these frames is "
+         + "what this normally is - the middle one is offered - and any linear "
+         + "image of the same size will do, including an integration of these "
+         + "frames made without registering them.</p>"
+         + "<p>It has to be linear. A stretched file sits at a different sky "
+         + "level from the frames and will be reported as not matching rather "
+         + "than composited wrongly.</p>"
+         : "<p>The master light the meteors are added to. Must have the same "
+         + "dimensions as the registered frames, so use the uncropped master: "
+         + "an autocropped one would put every mask in the wrong place.</p>";
       this.masterEdit.onTextUpdated = function (text) {
          self.masterPath = text.trim();
       };
@@ -1295,7 +1315,7 @@ var ComposeDialog = class extends Dialog {
       this.masterBrowse.text = "Browse...";
       this.masterBrowse.onClick = function () {
          var dlg = new OpenFileDialog;
-         dlg.caption = "Choose the master light";
+         dlg.caption = "Choose the " + self.noun;
          dlg.multipleSelections = false;
          // Every format PixInsight can read, from PixInsight itself. Writing
          // the list by hand is how the filter came to match nothing.
@@ -1399,10 +1419,10 @@ var ComposeDialog = class extends Dialog {
    // thirty frames to be read.
    validate() {
       if (this.masterPath.length === 0) {
-         return "Choose a master light.";
+         return "Choose a " + this.noun + ".";
       }
       if (!File.exists(this.masterPath)) {
-         return "That master does not exist:\n" + this.masterPath;
+         return "That " + this.noun + " does not exist:\n" + this.masterPath;
       }
       if (this.outputPath.length === 0) {
          return "Choose where to write the composite.";
@@ -1412,8 +1432,8 @@ var ComposeDialog = class extends Dialog {
          return "That output directory does not exist:\n" + dir;
       }
       if (this.outputPath === this.masterPath) {
-         return "The composite would overwrite the master. Choose another "
-              + "output file.";
+         return "The composite would overwrite the " + this.noun
+              + ". Choose another output file.";
       }
       return null;
    }
@@ -1430,6 +1450,10 @@ var MeteorComposerDialog = class extends Dialog {
       this.cache = new FrameCache(FRAME_CACHE_SIZE);
       this.cache.lockSTF = true;
       this.registeredDir = "";
+      // Which coordinate system every stage of this session is closed in
+      // (requirements 3.4). Sky-referenced is what every session before this
+      // existed was, so it is what an unanswered question means.
+      this.coordinateSystem = SKY_REFERENCED;
       this.detectionResults = null;
       this.cancelRequested = false;
       this._syncingSelection = false;
@@ -1607,6 +1631,65 @@ var MeteorComposerDialog = class extends Dialog {
 
       var pathLabelWidth = 58;
 
+      // Which coordinate system the whole session is closed in.
+      //
+      // It sits above Frames because it decides which directory Frames is
+      // asking for, and because getting it wrong is not recoverable by
+      // changing something later: the detections and the background have to
+      // come out of the same files or the composite is silently wrong
+      // (requirements 3.4).
+      //
+      // The two radios get a parent of their own. RadioButtons are exclusive
+      // within their parent, and the mask source radios further down are
+      // children of this same group box - put in beside them, these two would
+      // join that group and turning one on would turn the mask source off.
+      this.systemLabel = new Label(this.sourceGroup);
+      this.systemLabel.text = "System:";
+      this.systemLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
+      this.systemLabel.setFixedWidth(pathLabelWidth);
+
+      this.systemControl = new Control(this.sourceGroup);
+
+      this.skyRadio = new RadioButton(this.systemControl);
+      this.skyRadio.text = "Sky-referenced";
+      this.skyRadio.toolTip =
+         "<p>Detection reads the <b>registered</b> frames and the composite is "
+       + "built on the master light. The meteors land where they were among "
+       + "the stars, so the radiant is visible.</p>"
+       + "<p>This is the tracked case, and it is unchanged.</p>";
+      this.skyRadio.checked = true;
+      this.skyRadio.onCheck = function (checked) {
+         if (checked) {
+            self.setCoordinateSystem(SKY_REFERENCED);
+         }
+      };
+
+      this.groundRadio = new RadioButton(this.systemControl);
+      this.groundRadio.text = "Ground-referenced";
+      this.groundRadio.toolTip =
+         "<p>Detection reads the <b>debayered</b> frames and the composite is "
+       + "built on one of those frames. The meteors land where they were "
+       + "against the landscape, which is the picture a fixed tripod is "
+       + "usually taken for.</p>"
+       + "<p>Nothing is aligned, and nothing needs to be: the tripod did not "
+       + "move, so a meteor left where it was recorded is already in the right "
+       + "place. Registering a long fixed-tripod night instead loses frames "
+       + "outright and empties a large part of the ones that survive - "
+       + "measured at 327 frames lost out of 1045 and 36.5% of each survivor "
+       + "empty - and stretches the landscape into an arc in the master.</p>";
+      this.groundRadio.onCheck = function (checked) {
+         if (checked) {
+            self.setCoordinateSystem(GROUND_REFERENCED);
+         }
+      };
+
+      this.systemControl.sizer = new HorizontalSizer;
+      this.systemControl.sizer.spacing = 12;
+      this.systemControl.sizer.add(this.skyRadio);
+      this.systemControl.sizer.add(this.groundRadio);
+      this.systemControl.sizer.addStretch();
+      this.systemControl.adjustToContents();
+
       this.dirLabel = new Label(this.sourceGroup);
       this.dirLabel.text = "Frames:";
       this.dirLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
@@ -1614,17 +1697,19 @@ var MeteorComposerDialog = class extends Dialog {
 
       this.dirEdit = new Edit(this.sourceGroup);
       this.dirEdit.readOnly = true;
-      this.dirEdit.toolTip = "<p>Directory of registered frames (.xisf). Read "
-                           + "only - nothing is ever written here.</p>";
+      // Set from the coordinate system, which decides which directory this is
+      // asking for. updateCoordinateWording() is what keeps it true.
+      this.dirEdit.toolTip = "";
 
       this.browseButton = new PushButton(this.sourceGroup);
       this.browseButton.text = "Browse...";
       this.browseButton.onClick = function () {
          var dlg = new GetDirectoryDialog;
-         dlg.caption = "Registered frames directory";
+         dlg.caption = framesDialogCaption(self.coordinateSystem);
          if (dlg.execute()) {
             self.registeredDir = dlg.directory;
             self.dirEdit.text = dlg.directory;
+            self.warnIfDirectoryDisagrees();
             // Only a guess, and only when the operator has not made a choice
             // of their own: overwriting a deliberate setting because the
             // frames changed would be worse than guessing wrong once.
@@ -1705,6 +1790,11 @@ var MeteorComposerDialog = class extends Dialog {
          self.cancelRequested = true;
       };
 
+      var rowSystem = new HorizontalSizer;
+      rowSystem.spacing = 6;
+      rowSystem.add(this.systemLabel);
+      rowSystem.add(this.systemControl, 100);
+
       var row1 = new HorizontalSizer;
       row1.spacing = 6;
       row1.add(this.dirLabel);
@@ -1730,6 +1820,7 @@ var MeteorComposerDialog = class extends Dialog {
       this.sourceGroup.sizer.spacing = 4;
       var maskRows = this.buildMaskRows(pathLabelWidth);
 
+      this.sourceGroup.sizer.add(rowSystem);
       this.sourceGroup.sizer.add(row1);
       this.sourceGroup.sizer.add(rowOutput);
       for (var m = 0; m < maskRows.length; ++m) {
@@ -2709,6 +2800,7 @@ var MeteorComposerDialog = class extends Dialog {
       this.cancelRequested = false;
 
       this.registeredDir = "";
+      this.setCoordinateSystem(SKY_REFERENCED);
       this.dirEdit.text = "";
       this.outputDir = "";
       this.outputEdit.text = "";
@@ -3067,6 +3159,9 @@ var MeteorComposerDialog = class extends Dialog {
       // mounted somewhere else, so the path is a hint, not the identity.
       var results = { group: baseName(this.registeredDir),
                       registeredDir: this.registeredDir,
+                      // Carried so that screening a results file loaded later
+                      // cannot end up compositing in the other system.
+                      coordinateSystem: this.coordinateSystem,
                       screenFactor: SCREEN_FACTOR,
                       options: options, mask: this.maskSpec(), frames: [] };
       var withCandidates = 0;
@@ -3258,13 +3353,18 @@ var MeteorComposerDialog = class extends Dialog {
             this.registeredDir = payload.registeredDir;
             this.dirEdit.text = payload.registeredDir;
          }
+         // A file written before this existed has no coordinate system in it,
+         // and normaliseCoordinateSystem reads that as sky-referenced, which
+         // is what those sessions were.
+         this.setCoordinateSystem(payload.coordinateSystem);
          this.adoptResults(payload);
          if (this.registeredDir.length === 0) {
             (new MessageBox(
                "Results loaded, but this file does not record where the "
-             + "frames are. Choose the registered frames directory with "
-             + "Browse before selecting a candidate, otherwise the preview "
-             + "cannot open them.",
+             + "frames are. Choose the "
+             + expectedDirectoryName(this.coordinateSystem)
+             + " frames directory with Browse before selecting a candidate, "
+             + "otherwise the preview cannot open them.",
                TITLE, StdIcon.Information, StdButton.Ok)).execute();
          }
       } catch (e) {
@@ -3926,7 +4026,8 @@ var MeteorComposerDialog = class extends Dialog {
 
       var dlg = new ComposeDialog(this.acceptedCount(),
                                   this.guessMasterPath(),
-                                  this.guessOutputPath());
+                                  this.guessOutputPath(),
+                                  this.coordinateSystem);
       if (!dlg.execute()) {
          return;
       }
@@ -3974,6 +4075,14 @@ var MeteorComposerDialog = class extends Dialog {
    guessMasterPath() {
       if (this.registeredDir.length === 0) {
          return "";
+      }
+      // A ground-referenced composite is drawn onto one of the frames, so
+      // there is no master to look for: the middle of the night is offered
+      // (requirements 3.4). It lands in a field the operator can change, which
+      // is what makes it a default rather than a decision made for them.
+      if (isGroundReferenced(this.coordinateSystem)) {
+         var frame = middleFrame(listFrames(this.registeredDir));
+         return frame === null ? "" : this.registeredDir + "/" + frame;
       }
       var candidates = [];
       var dir = this.registeredDir;
@@ -4040,40 +4149,58 @@ var MeteorComposerDialog = class extends Dialog {
          return this.mismatchPolicy;
       }
 
+      var noun = this.backgroundNoun();
+      var ground = isGroundReferenced(this.coordinateSystem);
+
       var cause;
       if (outcome.code === "nodata") {
-         cause = "Registration moved this frame far enough off the reference "
-               + "that a large part of it is empty, and the fit has only the "
-               + "overlap to work with. The frames at the very beginning and "
-               + "the very end of a night are the ones this happens to. If "
-               + "the meteor itself is inside the overlap, the frame may still "
-               + "be worth compositing.";
+         cause = ground
+            // Nothing was registered in a ground-referenced session, so an
+            // empty area cannot have come from alignment. Saying it did would
+            // send the operator to look at a step they never ran.
+            ? "Part of this frame holds no data at all. Nothing here was "
+            + "aligned, so this is the frame itself: a black border, a frame "
+            + "written short, or a background that does not cover the same "
+            + "area as the frames."
+            : "Registration moved this frame far enough off the reference "
+            + "that a large part of it is empty, and the fit has only the "
+            + "overlap to work with. The frames at the very beginning and "
+            + "the very end of a night are the ones this happens to. If "
+            + "the meteor itself is inside the overlap, the frame may still "
+            + "be worth compositing.";
       } else if (outcome.code === "samples") {
          cause = "The trails cover so much of the frame that there is almost "
                + "no sky left to measure the two against each other. A "
                + "corridor width or a candidate count far larger than usual "
                + "does this.";
       } else if (outcome.code === "level") {
-         cause = "A frame and its master should sit at roughly the same sky "
-               + "level. This far apart usually means a different exposure or "
-               + "ISO, or a master that has already been stretched.";
+         cause = "A frame and its " + noun + " should sit at roughly the same "
+               + "sky level. This far apart usually means a different exposure "
+               + "or ISO, or a " + noun + " that has already been stretched"
+               + (ground
+                    ? " - a ground-referenced background has to be linear, so "
+                    + "an edited file will land here"
+                    : "") + ".";
       } else {
          cause = "The two are at the same brightness, so this is not an "
                + "exposure difference: the frame's detail does not follow the "
-               + "master's. The usual causes are a master that has not been "
-               + "debayered while the frames have (or the reverse), a "
-               + "registration that failed on this frame, and a frame that is "
-               + "trailed, defocused or clouded.";
+               + noun + "'s. The usual causes are a " + noun + " that has not "
+               + "been debayered while the frames have (or the reverse), "
+               + (ground
+                    ? "a background that came from a different night or a "
+                    + "different camera, "
+                    : "a registration that failed on this frame, ")
+               + "and a frame that is trailed, defocused or clouded.";
       }
 
       // How many frames it happens to is the diagnosis the operator can make
       // and this loop cannot: it is asked on the first failure, before there
       // is anything to count.
-      cause += "\n\nIf this happens on every frame, the master is what to "
-             + "check. If it happens on one or two, those frames are.";
+      cause += "\n\nIf this happens on every frame, the " + noun + " is what "
+             + "to check. If it happens on one or two, those frames are.";
 
       var box = new MessageBox(
-           file + " does not match the master:\n"
+           file + " does not match the " + noun + ":\n"
          + outcome.reason + ".\n\n"
          + cause + "\n\n"
          + "Composite it anyway?\n\n"
@@ -4108,7 +4235,8 @@ var MeteorComposerDialog = class extends Dialog {
    compose(masterPath, outputPath, jobs) {
       var masterWindow = ImageWindow.open(masterPath)[0];
       if (!masterWindow) {
-         throw new Error("could not open the master: " + masterPath);
+         throw new Error("could not open the " + this.backgroundNoun()
+                         + ": " + masterPath);
       }
 
       var composed = 0;
@@ -4137,7 +4265,7 @@ var MeteorComposerDialog = class extends Dialog {
       console.abortEnabled = true;
       console.writeln("<end><cbr><b>MeteorComposer</b>: compositing "
                       + jobs.length + " frames");
-      console.writeln("master: " + masterPath);
+      console.writeln(this.backgroundNoun() + ": " + masterPath);
       console.writeln("output: " + outputPath);
       console.flush();
 
@@ -4233,7 +4361,8 @@ var MeteorComposerDialog = class extends Dialog {
                   // mask in the wrong place, and the result would look like a
                   // mask bug rather than a mismatch.
                   var mismatch = subImage.width + "x" + subImage.height
-                               + " does not match the master's " + W + "x" + H;
+                               + " does not match the " + this.backgroundNoun()
+                               + "'s " + W + "x" + H;
                   skipped.push(job.file + ": " + mismatch);
                   console.warningln("LEFT OUT - " + mismatch);
                   continue;
@@ -4249,7 +4378,8 @@ var MeteorComposerDialog = class extends Dialog {
                   //
                   // Same size, so the size check above cannot catch it:
                   // debayering does not change the pixel dimensions.
-                  var counts = "the master has " + channels + " channel"
+                  var counts = "the " + this.backgroundNoun() + " has "
+                             + channels + " channel"
                              + (channels === 1 ? "" : "s") + " and this frame "
                              + "has " + subImage.numberOfChannels
                              + " - one of the two has not been debayered";
@@ -4277,7 +4407,8 @@ var MeteorComposerDialog = class extends Dialog {
                   var decision = this.mismatchDecision(job.file, outcome);
                   if (decision === "cancel") {
                      aborted = true;
-                     abortReason = job.file + " does not match the master";
+                     abortReason = job.file + " does not match the "
+                                 + this.backgroundNoun();
                      console.writeln("");
                      console.warningln("stopped: " + outcome.reason);
                      break;
@@ -4384,7 +4515,8 @@ var MeteorComposerDialog = class extends Dialog {
             // Named, not just counted. A forced frame is the one to look at
             // first when the composite looks wrong, and the report is the only
             // place that survives the run.
-            message += "\n\nComposited despite not matching the master:\n  "
+            message += "\n\nComposited despite not matching the "
+                     + this.backgroundNoun() + ":\n  "
                      + forced.join("\n  ");
          }
          if (skipped.length > 0) {
@@ -4403,7 +4535,8 @@ var MeteorComposerDialog = class extends Dialog {
                          + "% of the frame (" + coverage.touched + " pixels, "
                          + coverage.solid + " solid)");
          if (forced.length > 0) {
-            console.warningln("  composited despite not matching the master, "
+            console.warningln("  composited despite not matching the "
+                              + this.backgroundNoun() + ", "
                               + forced.length + ":");
             for (var fo = 0; fo < forced.length; ++fo) {
                console.warningln("    " + forced[fo]);
@@ -4439,6 +4572,12 @@ var MeteorComposerDialog = class extends Dialog {
    }
 
    restoreSettingsInner() {
+      var system = Settings.read(SETTINGS_KEY + "/coordinateSystem",
+                                 DataType.String);
+      // Restored before the directory, so that the mismatch warning - if the
+      // remembered pair disagrees - is raised once, with both halves known.
+      this.setCoordinateSystem(system);
+
       var dir = Settings.read(SETTINGS_KEY + "/registeredDir", DataType.String);
       if (dir !== null && dir.length > 0) {
          this.registeredDir = dir;
@@ -4525,6 +4664,8 @@ var MeteorComposerDialog = class extends Dialog {
       this.saveMaskSetting();
       Settings.write(SETTINGS_KEY + "/registeredDir", DataType.String,
                      this.registeredDir);
+      Settings.write(SETTINGS_KEY + "/coordinateSystem", DataType.String,
+                     this.coordinateSystem);
       Settings.write(SETTINGS_KEY + "/outputDir", DataType.String, this.outputDir);
    }
 
@@ -4545,9 +4686,93 @@ var MeteorComposerDialog = class extends Dialog {
       console.writeln("<end><cbr>mask saved: " + maskJSON);
    }
 
+   // --- Coordinate system --------------------------------------------------
+
+   // "master" is the wrong word for what a ground-referenced composite is
+   // drawn onto: there the background is one of the frames themselves. Every
+   // sentence the operator reads takes its noun from here.
+   backgroundNoun() {
+      return isGroundReferenced(this.coordinateSystem) ? "background" : "master";
+   }
+
+   setCoordinateSystem(system) {
+      var next = normaliseCoordinateSystem(system);
+      // Assigning `checked` fires onCheck, which lands back here. Idempotent
+      // either way, but the guard keeps the warning below from appearing twice
+      // for one click.
+      if (this._settingCoordinateSystem) {
+         return;
+      }
+      this._settingCoordinateSystem = true;
+      try {
+         var changed = this.coordinateSystem !== next;
+         this.coordinateSystem = next;
+         if (this.skyRadio) {
+            this.skyRadio.checked = next === SKY_REFERENCED;
+            this.groundRadio.checked = next === GROUND_REFERENCED;
+         }
+         this.updateCoordinateWording();
+         if (changed) {
+            this.warnIfDirectoryDisagrees();
+         }
+      } finally {
+         this._settingCoordinateSystem = false;
+      }
+   }
+
+   // The words in the window that are only true of one of the two systems.
+   updateCoordinateWording() {
+      var ground = isGroundReferenced(this.coordinateSystem);
+      var stage = expectedDirectoryName(this.coordinateSystem);
+      if (this.dirEdit) {
+         this.dirEdit.toolTip =
+            "<p>Directory of " + stage + " frames (.xisf). Read only - nothing "
+          + "is ever written here.</p>"
+          + (ground
+               ? "<p>Ground-referenced sessions read the frames as they came "
+               + "off the camera. They are never aligned, here or anywhere "
+               + "later.</p>"
+               : "");
+      }
+      if (this.composeButton) {
+         this.composeButton.toolTip = ground
+            ? "<p>Build the meteor composite: one of these frames with the "
+            + "accepted meteors added to it. The frame chosen as the "
+            + "background is never modified.</p>"
+            : "<p>Build the meteor composite: the master light with the "
+            + "accepted meteors added to it. The master is never modified.</p>";
+      }
+   }
+
+   // Says so when the directory's own name disagrees with the chosen system.
+   //
+   // Not a veto. The name is a guess about the operator's layout and refusing
+   // a directory that is in fact the right one would be worse than useless.
+   // But both ways of getting this wrong produce a composite that looks
+   // finished and is wrong, so neither passes in silence.
+   warnIfDirectoryDisagrees() {
+      var message = coordinateMismatch(this.coordinateSystem,
+                                       this.registeredDir);
+      if (message === null) {
+         return;
+      }
+      (new MessageBox(
+         message + "\n\nContinue only if this is really the directory you "
+       + "meant.",
+         TITLE, StdIcon.Warning, StdButton.Ok)).execute();
+   }
+
    updateEnabled() {
       var hasSession = this.session !== null;
       this.detectButton.enabled = this.registeredDir.length > 0;
+      // Locked once there are results. Detection, screening and compositing
+      // all have to happen in one coordinate system, and results carry theirs
+      // with them; switching underneath them would leave candidates found in
+      // one system about to be composited in the other. Reset unlocks it.
+      if (this.skyRadio) {
+         this.skyRadio.enabled = !hasSession;
+         this.groundRadio.enabled = !hasSession;
+      }
       this.saveSessionButton.enabled = hasSession;
       this.loadSessionButton.enabled = hasSession;
       this.exportButton.enabled = hasSession;
