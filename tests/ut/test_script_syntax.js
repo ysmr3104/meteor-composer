@@ -122,6 +122,64 @@ suite("every #include names a file that is there", function () {
    }
 });
 
+suite("radio buttons are set as a pair, from one place", function () {
+   // Comments are stripped first. The explanation of why this rule exists is
+   // written next to the code it governs and quotes the assignment it forbids,
+   // which the count would otherwise find. Strings are mangled by this too,
+   // and that is fine: nothing being counted here lives in one.
+   var raw = fs.readFileSync(SCRIPT, "utf8")
+      .replace(/\/\*[\s\S]*?\*\//g, " ")
+      .replace(/\/\/[^\n]*/g, " ");
+
+   // PJSR does not expose how radio buttons are grouped, and on 1.9.4 the
+   // grouping is measurably not there: with another Control inside the same
+   // GroupBox, clicking `Image` left `Edges` on as well. The dialog then said
+   // two mutually exclusive things at once.
+   //
+   // The fix is that each pair is only ever assigned together, in one method.
+   // That is what this pins, because the failure is invisible from here - it
+   // needs a mouse - and the assignment that breaks it is one line long.
+   var pairs = [
+      { name: "mask source", setter: "setMaskSource",
+        buttons: ["maskEdgesRadio", "maskFileRadio"] },
+      { name: "coordinate system", setter: "setCoordinateSystem",
+        buttons: ["skyRadio", "groundRadio"] }
+   ];
+
+   for (var p = 0; p < pairs.length; ++p) {
+      var pair = pairs[p];
+      for (var b = 0; b < pair.buttons.length; ++b) {
+         var button = pair.buttons[b];
+         var assignments = raw.match(
+            new RegExp("\\b" + button + "\\.checked\\s*=", "g")) || [];
+         ok(assignments.length === 1,
+            button + ".checked is assigned in exactly one place, not "
+            + assignments.length + " (" + pair.name + " - " + pair.setter + ")");
+      }
+
+      // Both halves in the same method, so neither can be set without the
+      // other.
+      var body = new RegExp(pair.setter + "\\(mode\\)|" + pair.setter
+                            + "\\(system\\)");
+      ok(body.test(raw), pair.setter + " exists");
+   }
+
+   // The handlers must not read the `checked` they are handed. Without the
+   // grouping, clicking the button that is already on turns it OFF, and a
+   // handler that only acts on `checked === true` would leave the pair with
+   // neither selected. A click on a radio means that radio, whichever way it
+   // was moving.
+   var handlers = raw.match(/\b(?:maskEdgesRadio|maskFileRadio|skyRadio|groundRadio)\.onCheck\s*=\s*function\s*\(([^)]*)\)/g) || [];
+   ok(handlers.length === 4, "all four radio handlers are found (got "
+      + handlers.length + ")");
+   for (var h = 0; h < handlers.length; ++h) {
+      var args = /function\s*\(([^)]*)\)/.exec(handlers[h])[1].trim();
+      ok(args === "",
+         handlers[h].split(".")[0] + " ignores the `checked` argument"
+         + (args === "" ? "" : " (takes `" + args + "`)"));
+   }
+});
+
 //----------------------------------------------------------------------------
 
 console.log("\n============================================");

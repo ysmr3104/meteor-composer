@@ -1860,11 +1860,12 @@ var MeteorComposerDialog = class extends Dialog {
        + "<p>Tracked exposures, and fixed-tripod ones short enough for "
        + "StarAlignment to solve. This is what the script did before it could "
        + "do anything else, and it is unchanged.</p>";
-      this.skyRadio.checked = true;
-      this.skyRadio.onCheck = function (checked) {
-         if (checked) {
-            self.setCoordinateSystem(SKY_REFERENCED);
-         }
+      // No `checked` argument. A click on this button means sky-referenced
+      // whichever way the button was moving: with the grouping not working,
+      // clicking the one already on turns it off, and reading the argument
+      // would leave neither selected. setCoordinateSystem sets the pair.
+      this.skyRadio.onCheck = function () {
+         self.setCoordinateSystem(SKY_REFERENCED);
       };
 
       this.groundRadio = new RadioButton(this.systemControl);
@@ -1882,11 +1883,12 @@ var MeteorComposerDialog = class extends Dialog {
        + "outright and empties a large part of the ones that survive - "
        + "measured at 327 frames lost out of 1045 and 36.5% of each survivor "
        + "empty - and stretches the landscape into an arc in the master.</p>";
-      this.groundRadio.onCheck = function (checked) {
-         if (checked) {
-            self.setCoordinateSystem(GROUND_REFERENCED);
-         }
+      this.groundRadio.onCheck = function () {
+         self.setCoordinateSystem(GROUND_REFERENCED);
       };
+
+      // Both of them, now that both exist.
+      this.setCoordinateSystem(this.coordinateSystem);
 
       this.systemControl.sizer = new HorizontalSizer;
       this.systemControl.sizer.spacing = 12;
@@ -2073,12 +2075,12 @@ var MeteorComposerDialog = class extends Dialog {
       this.maskEdgesRadio.toolTip =
          "<p>Exclude a band along one or more edges of the frame.</p>"
        + "<p>All zero excludes nothing.</p>";
-      this.maskEdgesRadio.checked = true;
-      this.maskEdgesRadio.onCheck = function (checked) {
-         if (checked) {
-            self.maskMode = "edges";
-            self.maskSourceChanged();
+      this.maskEdgesRadio.onCheck = function () {
+         if (self._settingMaskSource) {
+            return;
          }
+         self.setMaskSource("edges");
+         self.maskSourceChanged();
       };
 
       this.maskFileRadio = new RadioButton(group);
@@ -2086,12 +2088,17 @@ var MeteorComposerDialog = class extends Dialog {
       this.maskFileRadio.toolTip =
          "<p>Exclude wherever a painted image is black. For a shape straight "
        + "edges cannot describe, such as a tree line.</p>";
-      this.maskFileRadio.onCheck = function (checked) {
-         if (checked) {
-            self.maskMode = "file";
-            self.maskSourceChanged();
+      this.maskFileRadio.onCheck = function () {
+         if (self._settingMaskSource) {
+            return;
          }
+         self.setMaskSource("file");
+         self.maskSourceChanged();
       };
+
+      // Both of them, now that both exist. See setMaskSource for why this is
+      // not `maskEdgesRadio.checked = true`.
+      this.setMaskSource(this.maskMode);
 
       // A RadioButton asks for a comfortable minimum width, and two of them
       // asking for it pushed the numbers out of the group.
@@ -3046,6 +3053,34 @@ var MeteorComposerDialog = class extends Dialog {
 
    // --- Exclusion mask -----------------------------------------------------
 
+   // Which of the two mask sources is selected, set as a pair.
+   //
+   // PJSR does not expose how radio buttons are grouped, and grouping cannot
+   // be relied on here. Measured on 1.9.4: with another Control inside the
+   // same GroupBox - the System selector is one - clicking `Image` no longer
+   // clears `Edges`, and both read as on. Nothing in the dialog then says
+   // which source is in force, and the mask that gets built is whichever the
+   // code happened to record.
+   //
+   // Clicking the one already on can also turn it off, which would leave
+   // neither selected. That is why the handlers assert their own mode instead
+   // of believing the `checked` they are handed: a click on `Edges` means
+   // edges, whichever way the button was moving.
+   //
+   // The flag stops the pair being set from inside a handler that the pair
+   // being set has just triggered.
+   setMaskSource(mode) {
+      var edges = mode !== "file";
+      this.maskMode = edges ? "edges" : "file";
+      this._settingMaskSource = true;
+      try {
+         this.maskEdgesRadio.checked = edges;
+         this.maskFileRadio.checked = !edges;
+      } finally {
+         this._settingMaskSource = false;
+      }
+   }
+
    maskSourceChanged() {
       var edges = (this.maskMode === "edges");
       for (var i = 0; i < MASK_EDGES.length; ++i) {
@@ -3075,8 +3110,7 @@ var MeteorComposerDialog = class extends Dialog {
       this.maskFileRotation = 0;
       this.maskRotateCombo.currentItem = 0;
       this.maskFileEdit.text = "";
-      this.maskMode = "edges";
-      this.maskEdgesRadio.checked = true;
+      this.setMaskSource("edges");
       this.maskSourceChanged();
    }
 
@@ -3258,8 +3292,7 @@ var MeteorComposerDialog = class extends Dialog {
          return;
       }
       if (spec.mode === "file") {
-         this.maskMode = "file";
-         this.maskFileRadio.checked = true;
+         this.setMaskSource("file");
          // Before the file is read, so the first turn applied is the stored one.
          var turn = this.maskRotations.indexOf(Number(spec.rotate) || 0);
          this.maskFileRotation = turn >= 0 ? this.maskRotations[turn] : 0;
@@ -3279,8 +3312,7 @@ var MeteorComposerDialog = class extends Dialog {
          this.maskSourceChanged();
          return;
       }
-      this.maskMode = "edges";
-      this.maskEdgesRadio.checked = true;
+      this.setMaskSource("edges");
       this.maskEdges = makeEdgeSpec();
       for (var i = 0; i < MASK_EDGES.length; ++i) {
          var edge = MASK_EDGES[i];
