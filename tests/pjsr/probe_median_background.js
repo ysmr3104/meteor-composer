@@ -112,8 +112,27 @@ function secondsOfDay(stamp) {
    return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
 }
 
+// MAD is the wrong instrument for this and the first run of this probe used
+// it. Across a whole frame the median absolute deviation is dominated by what
+// is actually in the picture - stars, the landscape, the gradient - not by the
+// noise, so it barely moved: 0.959, 0.949, 0.948 for 5, 15 and 31 frames,
+// against a root-N ideal of 0.447, 0.258, 0.180. That reads as "stacking does
+// not help" and it is a property of the ruler.
+//
+// noiseMRS is PixInsight's own estimator: a multiresolution support separates
+// the noise from the structure first. It is what the core uses to report noise
+// and it returns [sigma, count], the count being how many pixels it decided
+// were noise. MAD is still reported, labelled as what it measures.
 function statsOf(image) {
+   var noise = null;
+   try {
+      noise = image.noiseMRS();
+   } catch (e) {
+      noise = null;
+   }
    return { median: image.median(), mad: image.MAD(),
+            noise: noise === null ? null : noise[0],
+            noiseCount: noise === null ? null : noise[1],
             width: image.width, height: image.height,
             channels: image.numberOfChannels };
 }
@@ -205,17 +224,28 @@ for (var c = 0; c < COUNTS.length; ++c) {
    say("  " + stats.width + "x" + stats.height + "x" + stats.channels
        + "   " + (elapsed / 1000).toFixed(1) + " s");
    say("  median " + stats.median.toFixed(6)
-       + "   MAD " + stats.mad.toFixed(6));
+       + "   noise " + (stats.noise === null ? "n/a"
+                        : stats.noise.toExponential(3))
+       + "   MAD " + stats.mad.toFixed(6) + " (structure, not noise)");
 
    if (baseline === null) {
       baseline = stats;
    } else {
       var levelRatio = stats.median / baseline.median;
-      var noiseRatio = stats.mad / baseline.mad;
       say("  sky level  " + levelRatio.toFixed(4) + " x one frame"
           + "   (the composite's fit wants this near 1)");
-      say("  noise      " + noiseRatio.toFixed(4) + " x one frame"
-          + "   (root-N ideal is " + (1 / Math.sqrt(count)).toFixed(4) + ")");
+      if (stats.noise !== null && baseline.noise !== null) {
+         // A median of N samples is noisier than their mean by about 1.253 at
+         // large N, so that - not root N alone - is what this is measured
+         // against.
+         var ideal = 1.253 / Math.sqrt(count);
+         say("  noise      " + (stats.noise / baseline.noise).toFixed(4)
+             + " x one frame"
+             + "   (a median of " + count + " should reach "
+             + ideal.toFixed(4) + ")");
+      }
+      say("  MAD        " + (stats.mad / baseline.mad).toFixed(4)
+          + " x one frame   (structure; it is not expected to fall)");
       var sameSize = stats.width === baseline.width
                   && stats.height === baseline.height
                   && stats.channels === baseline.channels;
