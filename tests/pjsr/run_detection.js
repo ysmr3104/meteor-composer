@@ -26,12 +26,23 @@
 // `require`, which does not exist.
 #include "../../javascript/candidate_ops.js"
 #include "../../javascript/trail_colour.js"
+// For the coordinate system the results are written in. MeteorComposer.js
+// records one in every results file, and its own comment says either
+// producer's file must be readable by either consumer - so this producer
+// records one too.
+#include "../../javascript/coordinate_system.js"
 
 var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test";
 var GROUP = "Light_BIN-1_6024x4024_EXPOSURE-13.00s_FILTER-NoFilter_RGB";
 var REGISTERED_DIR = DATA_ROOT + "/registered/" + GROUP;
 var OUTPUT_PATH = DATA_ROOT + "/detection_results.json";
 var LOG_PATH = DATA_ROOT + "/run_detection.log";
+
+// Which coordinate system these frames are read in (requirements 3.4). For a
+// fixed-tripod night, point REGISTERED_DIR at the `debayered` group and set
+// this to GROUND_REFERENCED - detection itself is per-frame arithmetic and
+// does not care, but everything downstream of the results file does.
+var COORDINATE_SYSTEM = SKY_REFERENCED;
 
 // Screening parameters. These are the values under evaluation; they are NOT
 // verified by unit tests (docs/tests.md section 5-1).
@@ -232,6 +243,11 @@ function main() {
    var payload = {
       generated: (new Date()).toISOString(),
       group: GROUP,
+      // A full path, so the screening UI can open the frames without being
+      // told where they are a second time. `group` is only a directory name
+      // and adopting it as a path opens nothing.
+      registeredDir: REGISTERED_DIR,
+      coordinateSystem: COORDINATE_SYSTEM,
       screenFactor: SCREEN_FACTOR,
       options: OPTIONS,
       elapsedMs: elapsed,
