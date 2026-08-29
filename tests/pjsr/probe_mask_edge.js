@@ -52,37 +52,25 @@ function say(line) {
    File.writeTextFile(LOG_PATH, log.join("\n") + "\n");
 }
 
+// The project's own reader, copied from MeteorComposer.withFrame. Writing a
+// second one is how the first attempt at this probe died: it reached for the
+// SpiderMonkey colour-space globals, which do not exist under V8, and the log
+// stopped at its header.
 function loadField(path, factor) {
-   var window = ImageWindow.open(path)[0];
-   if (!window) {
+   var windows = ImageWindow.open(path);
+   if (!windows || windows.length === 0) {
       return null;
    }
+   var win = windows[0];
    try {
-      var image = window.mainView.image;
-      var W = image.width, H = image.height;
-      var w = Math.floor(W / factor), h = Math.floor(H / factor);
-      var lum = new Image(W, H, 1, ColorSpace_Gray);
-      lum.fill(0);
-      var src = new Image(image);
-      if (src.numberOfChannels > 1) {
-         src.colorSpace = ColorSpace_HSI;
-         src.selectedChannel = 2;
-         lum.assign(src, new Rect(0, 0, W, H));
-      } else {
-         lum.assign(src);
-      }
-      src.free();
-      lum.resample(w, h);
-      var data = new Float32Array(w * h);
-      for (var y = 0; y < h; ++y) {
-         for (var x = 0; x < w; ++x) {
-            data[y * w + x] = lum.sample(x, y, 0);
-         }
-      }
-      lum.free();
-      return { data: data, width: w, height: h };
+      var image = win.mainView.image;
+      var Y = new Image();
+      image.getLuminance(Y);
+      Y.resample(1.0 / factor);
+      var m = Y.toMatrix();
+      return { data: m.toArray(), width: Y.width, height: Y.height };
    } finally {
-      window.forceClose();
+      win.forceClose();
    }
 }
 
