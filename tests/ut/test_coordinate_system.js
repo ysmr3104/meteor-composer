@@ -134,6 +134,92 @@ suite("the background offered is the middle of the night", function () {
    ok(cs.middleFrame(night) !== night[night.length - 1], "nor the last");
 });
 
+suite("the stack window is consecutive and centred", function () {
+   var night = [];
+   for (var i = 0; i < 100; ++i) {
+      night.push("f" + i);
+   }
+
+   var w = cs.medianStackFrames(night, "f50", 15);
+   equal(w.length, 15, "the count asked for is the count returned");
+   equal(w[0], "f43", "and it starts seven before the centre");
+   equal(w[14], "f57", "and ends seven after");
+
+   // Consecutive, not spread. Spreading the same 15 frames across the night
+   // would draw the stars as dashes over the whole rotation instead of one
+   // short trail.
+   var consecutive = true;
+   for (var j = 1; j < w.length; ++j) {
+      if (night.indexOf(w[j]) !== night.indexOf(w[j - 1]) + 1) {
+         consecutive = false;
+      }
+   }
+   ok(consecutive, "every frame in the window follows the one before it");
+
+   // Clamped rather than shortened: the operator asked for a noise reduction,
+   // and silently giving them half of it at the ends of the night would be a
+   // different result wearing the same number.
+   var first = cs.medianStackFrames(night, "f0", 15);
+   equal(first.length, 15, "a centre at the very start still gets 15");
+   equal(first[0], "f0", "taken from the start");
+   var last = cs.medianStackFrames(night, "f99", 15);
+   equal(last.length, 15, "and so does one at the very end");
+   equal(last[14], "f99", "taken from the end");
+
+   var all = cs.medianStackFrames(night, "f50", 500);
+   equal(all.length, 100, "asking for more frames than exist gives all of them");
+
+   equal(cs.medianStackFrames(night, "not-here", 5).length, 5,
+         "an unknown centre still produces a window");
+   equal(cs.medianStackFrames([], "f1", 5).length, 0, "no frames, no window");
+
+   ok(cs.MIN_STACK_FRAMES >= 3,
+      "the minimum is at least three - a median of two is their mean");
+});
+
+suite("the trail estimate refuses to guess", function () {
+   // The number the operator makes the choice on. Inventing one would be
+   // worse than saying nothing.
+   equal(cs.stackTrailEstimate(15, 0), "", "no interval, no estimate");
+   equal(cs.stackTrailEstimate(15, -1), "", "nor a nonsensical one");
+   equal(cs.stackTrailEstimate(1, 14), "", "one frame draws no trail");
+
+   // mave's data: 13 s exposures about 14 s apart. 15 frames spans 196 s,
+   // which is 0.82 degrees - the figure probe_median_background measured.
+   var estimate = cs.stackTrailEstimate(15, 14);
+   ok(estimate.indexOf("0.82") >= 0,
+      "15 frames 14 s apart is 0.82 deg of trail (got: " + estimate + ")");
+   ok(cs.stackTrailEstimate(5, 14).indexOf("56 s") >= 0,
+      "and a short window is given in seconds, not fractions of a minute");
+});
+
+suite("a night that crosses midnight still has a positive interval", function () {
+   equal(cs.observationSeconds("2026-08-12T00:54:13.123"), 3253.123,
+         "the time of day is read");
+   equal(cs.observationSeconds("no date here"), null, "and rubbish is refused");
+   equal(cs.observationSeconds(null), null, "as is null");
+
+   // mave's night: 23:25:20 to 03:38:04, 1045 frames. Subtracting the stamps
+   // without allowing for midnight gives a negative interval, and a star trail
+   // measured in negative degrees.
+   var interval = cs.frameIntervalSeconds("2026-08-12T23:25:20",
+                                          "2026-08-13T03:38:04", 1045);
+   ok(interval > 0, "the interval is positive across midnight");
+   ok(Math.abs(interval - 14.55) < 0.1,
+      "and it is about 14.6 s (got " + interval.toFixed(2) + ")");
+
+   var sameNight = cs.frameIntervalSeconds("2026-08-12T01:00:00",
+                                           "2026-08-12T01:10:00", 41);
+   ok(Math.abs(sameNight - 15) < 0.001,
+      "a night inside one day is unaffected");
+
+   equal(cs.frameIntervalSeconds("bad", "worse", 10), 0,
+         "unreadable stamps give 0, which reads as `say nothing`");
+   equal(cs.frameIntervalSeconds("2026-08-12T01:00:00",
+                                 "2026-08-12T01:00:00", 1), 0,
+         "and so does a single frame");
+});
+
 //----------------------------------------------------------------------------
 
 console.log("\n============================================");

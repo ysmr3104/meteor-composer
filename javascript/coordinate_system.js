@@ -138,6 +138,106 @@ function middleFrame(names) {
    return names[Math.floor((names.length - 1) / 2)];
 }
 
+// --- Stacking the background ------------------------------------------------
+
+// A median of a few frames, none of them aligned, is the other thing the
+// background can be. The tripod did not move, so the landscape stays sharp; a
+// median drops anything in fewer than half the frames, so the meteors and
+// satellites go; and the noise falls. What it costs is the stars, which are
+// the one thing in the picture that does move.
+//
+// Measured on mave's data (6064x4040 RGB, 13 s frames, probe_median_background):
+//
+//   frames   noise vs one frame   ideal (1.253/sqrt N)   sky turned   time
+//        5               0.5863                 0.5604       0.23 deg    3 s
+//       15               0.3673                 0.3235       0.82 deg   25 s
+//       31               0.2712                 0.2250       1.75 deg   37 s
+//
+// 15 is where the two curves cross over: most of the noise that stacking can
+// remove is gone, and the trail is still under a degree. It is a default, not
+// a recommendation - how long a star trail should be is the whole question and
+// it is not ours to answer.
+var DEFAULT_STACK_FRAMES = 15;
+
+// A median of two frames is their mean. Below three the word means nothing.
+var MIN_STACK_FRAMES = 3;
+
+// Which frames go into the stack: consecutive, centred on the chosen one.
+//
+// Consecutive, not spread across the night. Spreading would put the same
+// number of frames over four hours and draw the stars as dashes across 63
+// degrees; consecutive draws one short trail. The window is clamped to the
+// ends of the night rather than shortened, so the count the operator asked for
+// is the count they get.
+function medianStackFrames(names, centreName, count) {
+   if (!names || names.length === 0) {
+      return [];
+   }
+   var n = Math.max(1, Math.floor(count));
+   if (n >= names.length) {
+      return names.slice(0);
+   }
+   var centre = names.indexOf(centreName);
+   if (centre < 0) {
+      centre = Math.floor((names.length - 1) / 2);
+   }
+   var half = Math.floor((n - 1) / 2);
+   var from = Math.max(0, Math.min(centre - half, names.length - n));
+   return names.slice(from, from + n);
+}
+
+// How long a star trail the stack will draw, in the operator's terms.
+//
+// Returns "" when the interval is not known, because a made-up number here
+// would be worse than none: this is the figure the choice is made on.
+function stackTrailEstimate(count, secondsPerFrame) {
+   if (!(secondsPerFrame > 0) || !(count > 1)) {
+      return "";
+   }
+   var span = (count - 1) * secondsPerFrame;
+   var degrees = span * 15 / 3600;
+   var minutes = span / 60;
+   return (minutes < 1 ? span.toFixed(0) + " s" : minutes.toFixed(1) + " min")
+        + " of sky rotation (" + degrees.toFixed(2) + " deg of trail)";
+}
+
+// The seconds between one frame and the next, from the first and last frames'
+// DATE-OBS.
+//
+// A night crosses midnight - mave's ran from 23:25:20 to 03:38:04 - so the
+// last stamp is routinely smaller than the first. Subtracting them without
+// allowing for that gives a negative interval and, taken at face value, a
+// star trail measured in negative degrees.
+//
+// Only the time of day is read. The date is there in the stamp, but a session
+// spanning more than one night is not a thing this measures, and parsing dates
+// properly is a larger promise than this needs to make.
+function observationSeconds(stamp) {
+   if (typeof stamp !== "string") {
+      return null;
+   }
+   var m = /T(\d{2}):(\d{2}):(\d{2}(?:\.\d+)?)/.exec(stamp);
+   if (m === null) {
+      return null;
+   }
+   return Number(m[1]) * 3600 + Number(m[2]) * 60 + Number(m[3]);
+}
+
+// Returns 0 when it cannot be worked out, which stackTrailEstimate reads as
+// "say nothing".
+function frameIntervalSeconds(firstStamp, lastStamp, frameCount) {
+   var t0 = observationSeconds(firstStamp);
+   var t1 = observationSeconds(lastStamp);
+   if (t0 === null || t1 === null || !(frameCount > 1)) {
+      return 0;
+   }
+   var span = t1 - t0;
+   if (span < 0) {
+      span += 24 * 3600;
+   }
+   return span / (frameCount - 1);
+}
+
 // --- Exports ----------------------------------------------------------------
 
 if (typeof module !== "undefined") {
@@ -153,6 +253,12 @@ if (typeof module !== "undefined") {
       expectedDirectoryName: expectedDirectoryName,
       directorySuggests: directorySuggests,
       coordinateMismatch: coordinateMismatch,
-      middleFrame: middleFrame
+      middleFrame: middleFrame,
+      DEFAULT_STACK_FRAMES: DEFAULT_STACK_FRAMES,
+      MIN_STACK_FRAMES: MIN_STACK_FRAMES,
+      medianStackFrames: medianStackFrames,
+      stackTrailEstimate: stackTrailEstimate,
+      observationSeconds: observationSeconds,
+      frameIntervalSeconds: frameIntervalSeconds
    };
 }

@@ -156,6 +156,116 @@ function withFrame(path, factor, fn) {
 // A candidate whose colour cannot be read keeps `colour` unset, and the
 // classifier then scores it without the term rather than with a guess - which
 // is the behaviour that protects a meteor the measurement failed on.
+// When a frame was taken, from its own header. Null when the file cannot be
+// opened or carries no DATE-OBS, which the caller reads as "unknown" rather
+// than as a time.
+function dateObsOf(path) {
+   var window = null;
+   try {
+      window = ImageWindow.open(path)[0];
+      if (!window) {
+         return null;
+      }
+      var kw = window.keywords;
+      for (var i = 0; i < kw.length; ++i) {
+         if (kw[i].name === "DATE-OBS") {
+            // FITS string values arrive quoted and padded.
+            return kw[i].value.trim().replace(/^'|'$/g, "").trim();
+         }
+      }
+      return null;
+   } catch (e) {
+      return null;
+   } finally {
+      if (window) {
+         window.forceClose();
+      }
+   }
+}
+
+// Only assign what this build has. ImageIntegration has gained and lost
+// properties across versions and assigning a missing one throws, which would
+// lose the whole stack rather than one setting.
+function setIfPresent(process, name, value) {
+   if (name in process) {
+      process[name] = value;
+      return true;
+   }
+   console.warningln("ImageIntegration has no `" + name + "` in this build; "
+                     + "leaving it at its default");
+   return false;
+}
+
+// A median of frames that were never aligned, written to `outPath`.
+//
+// Nothing here registers anything and nothing needs to: this is only ever
+// called for a ground-referenced composite, where the tripod did not move
+// (requirements 3.4). The median is what removes the meteors, the satellites
+// and the aircraft from the background - they are in one frame each, and a
+// median drops whatever is in fewer than half.
+//
+// No normalisation. The frames are minutes apart from one camera at one
+// exposure, and the composite fits every frame against this result afterwards
+// anyway. Measured: the stack's sky level came out at 0.9994 of a single
+// frame's.
+//
+// Returns outPath, or null after saying why.
+function integrateMedian(paths, outPath) {
+   if (paths.length < 3) {
+      console.criticalln("a median needs at least three frames; "
+                         + paths.length + " were given");
+      return null;
+   }
+   var II = new ImageIntegration;
+   var images = [];
+   for (var i = 0; i < paths.length; ++i) {
+      // [enabled, path, drizzlePath, localNormalizationPath] - four columns,
+      // as PixInsight 1.9 requires.
+      images.push([true, paths[i], "", ""]);
+   }
+   II.images = images;
+   setIfPresent(II, "combination", ImageIntegration.Median);
+   setIfPresent(II, "normalization", ImageIntegration.NoNormalization);
+   setIfPresent(II, "rejection", ImageIntegration.NoRejection);
+   setIfPresent(II, "rejectionNormalization",
+                ImageIntegration.NoRejectionNormalization);
+   setIfPresent(II, "weightMode", ImageIntegration.DontCare);
+   setIfPresent(II, "generateRejectionMaps", false);
+   setIfPresent(II, "generateDrizzleData", false);
+   setIfPresent(II, "generate64BitResult", false);
+   setIfPresent(II, "subtractPedestals", false);
+   setIfPresent(II, "evaluateSNR", false);
+   setIfPresent(II, "autoMemorySize", true);
+   setIfPresent(II, "autoMemoryLimit", 0.75);
+
+   var ran = false;
+   try {
+      ran = II.executeGlobal();
+   } catch (e) {
+      console.criticalln("ImageIntegration failed: " + e);
+      return null;
+   }
+   if (!ran) {
+      console.criticalln("ImageIntegration declined to run");
+      return null;
+   }
+
+   var window = ImageWindow.windowById(II.integrationImageId);
+   if (!window || window.isNull) {
+      console.criticalln("ImageIntegration produced no image");
+      return null;
+   }
+   try {
+      window.saveAs(outPath, false, false, false, false);
+   } catch (e2) {
+      console.criticalln("could not write the background: " + e2);
+      return null;
+   } finally {
+      window.forceClose();
+   }
+   return outPath;
+}
+
 function attachColours(image, candidates, factor) {
    var sampler = function (x, y, channel) {
       return image.sample(x, y, channel);
@@ -1256,7 +1366,8 @@ var ModeDialog = class extends Dialog {
 // Both fields are editable text, so a path can be typed or pasted. That is not
 // a nicety: it is the way out when a file dialog will not cooperate.
 var ComposeDialog = class extends Dialog {
-   constructor(meteorCount, masterGuess, outputGuess, coordinateSystem) {
+   constructor(meteorCount, masterGuess, outputGuess, coordinateSystem,
+               frameNames, secondsPerFrame) {
       super();
 
       var self = this;
@@ -1264,6 +1375,11 @@ var ComposeDialog = class extends Dialog {
       this.outputPath = outputGuess || "";
       this.coordinateSystem = normaliseCoordinateSystem(coordinateSystem);
       var ground = isGroundReferenced(this.coordinateSystem);
+      this.frameNames = frameNames || [];
+      this.secondsPerFrame = secondsPerFrame > 0 ? secondsPerFrame : 0;
+      // 0 means the background is the file named above, as it is. Anything
+      // else is how many frames to take a median of, centred on that file.
+      this.stackCount = 0;
       // What the meteors are drawn onto. In a ground-referenced session it is
       // one of the frames themselves, so calling it a master light would be
       // wrong in the field the operator is being asked to fill in
@@ -1335,6 +1451,54 @@ var ComposeDialog = class extends Dialog {
       masterRow.add(this.masterEdit, 100);
       masterRow.add(this.masterBrowse);
 
+      // Stacking. Offered only where it means something: the frames were never
+      // aligned, so a median of them is sharp on the ground and smeared on the
+      // stars, and that trade is the operator's to make.
+      var stackRow = null;
+      if (ground) {
+         this.stackCheck = new CheckBox(this);
+         this.stackCheck.text = "Median of";
+         this.stackCheck.toolTip =
+            "<p>Take a median of this many frames, centred on the one above, "
+          + "and use that as the background instead of the single frame.</p>"
+          + "<p>Nothing is aligned. The tripod did not move, so the landscape "
+          + "stays sharp; a median drops whatever is in fewer than half the "
+          + "frames, so meteors, satellites and aircraft disappear from the "
+          + "background; and the noise falls. What it costs is the stars, "
+          + "which are the one thing in the picture that moves.</p>"
+          + "<p>Measured on 6064x4040 frames: 5 frames leave 59% of one "
+          + "frame's noise, 15 leave 37%, 31 leave 27%. The trail grows the "
+          + "whole way, so this is a judgement about the picture rather than a "
+          + "setting with a right answer.</p>";
+         this.stackCheck.onCheck = function (checked) {
+            self.stackCount = checked ? self.stackSpin.value : 0;
+            self.stackSpin.enabled = checked;
+            self.updateStackNote();
+         };
+
+         this.stackSpin = new SpinBox(this);
+         this.stackSpin.minValue = MIN_STACK_FRAMES;
+         this.stackSpin.maxValue = 999;
+         this.stackSpin.value = DEFAULT_STACK_FRAMES;
+         this.stackSpin.enabled = false;
+         this.stackSpin.onValueUpdated = function (value) {
+            if (self.stackCount > 0) {
+               self.stackCount = value;
+            }
+            self.updateStackNote();
+         };
+
+         this.stackNote = new Label(this);
+         this.stackNote.textAlignment = TextAlignment.Left | TextAlignment.VertCenter;
+
+         stackRow = new HorizontalSizer;
+         stackRow.spacing = 6;
+         stackRow.addSpacing(labelWidth + 6);
+         stackRow.add(this.stackCheck);
+         stackRow.add(this.stackSpin);
+         stackRow.add(this.stackNote, 100);
+      }
+
       this.outputLabel = new Label(this);
       this.outputLabel.text = "Composite:";
       this.outputLabel.textAlignment = TextAlignment.Right | TextAlignment.VertCenter;
@@ -1405,14 +1569,36 @@ var ComposeDialog = class extends Dialog {
       this.sizer.add(this.infoLabel);
       this.sizer.addSpacing(6);
       this.sizer.add(masterRow);
+      if (stackRow !== null) {
+         this.sizer.add(stackRow);
+      }
       this.sizer.add(outputRow);
       this.sizer.addSpacing(10);
       this.sizer.add(buttons);
+
+      this.updateStackNote();
 
       this.adjustToContents();
       this.setMinWidth(640);
       // Paths are long and the fields hold text, so let it be widened.
       this.userResizable = true;
+   }
+
+   // What stacking will actually cost, in the operator's terms, next to the
+   // control that decides it. Says nothing when the frame interval is not
+   // known: this is the figure the choice is made on and a made-up one would
+   // be worse than none.
+   updateStackNote() {
+      if (this.stackNote === undefined) {
+         return;
+      }
+      if (this.stackCount === 0) {
+         this.stackNote.text = "frames - off, the single frame is used";
+         return;
+      }
+      var estimate = stackTrailEstimate(this.stackCount, this.secondsPerFrame);
+      this.stackNote.text = "frames"
+         + (estimate.length > 0 ? "   ~ " + estimate : "");
    }
 
    // Checked here rather than after the operator has waited a minute for
@@ -1430,6 +1616,21 @@ var ComposeDialog = class extends Dialog {
       var dir = directoryOf(this.outputPath);
       if (dir.length > 0 && !File.directoryExists(dir)) {
          return "That output directory does not exist:\n" + dir;
+      }
+      if (this.stackCount > 0) {
+         // The stack is a window of the session's own frames centred on this
+         // one, so a background from somewhere else has no centre to be
+         // centred on.
+         if (this.frameNames.indexOf(baseName(this.masterPath)) < 0) {
+            return "Stacking takes a window of this session's frames centred "
+                 + "on the one chosen above, and\n\n" + baseName(this.masterPath)
+                 + "\n\nis not one of them. Choose one of the frames, or turn "
+                 + "stacking off.";
+         }
+         if (this.frameNames.length < MIN_STACK_FRAMES) {
+            return "There are only " + this.frameNames.length + " frames, and "
+                 + "a median needs at least " + MIN_STACK_FRAMES + ".";
+         }
       }
       if (this.outputPath === this.masterPath) {
          return "The composite would overwrite the " + this.noun
@@ -4024,10 +4225,15 @@ var MeteorComposerDialog = class extends Dialog {
          return;
       }
 
+      var ground = isGroundReferenced(this.coordinateSystem);
+      var frameNames = ground ? listFrames(this.registeredDir) : [];
       var dlg = new ComposeDialog(this.acceptedCount(),
                                   this.guessMasterPath(),
                                   this.guessOutputPath(),
-                                  this.coordinateSystem);
+                                  this.coordinateSystem,
+                                  frameNames,
+                                  ground ? this.frameIntervalSeconds(frameNames)
+                                         : 0);
       if (!dlg.execute()) {
          return;
       }
@@ -4039,6 +4245,15 @@ var MeteorComposerDialog = class extends Dialog {
       var restoreButton = this.composeButton.text;
       this.composeButton.enabled = false;
       try {
+         if (dlg.stackCount > 0) {
+            masterPath = this.buildStackedBackground(frameNames, masterPath,
+                                                     dlg.stackCount,
+                                                     outputPath);
+            if (masterPath === null) {
+               // Already reported, with the reason, in the console and a box.
+               return;
+            }
+         }
          this.compose(masterPath, outputPath, jobs);
       } catch (e) {
          (new MessageBox("Composition failed:\n" + e,
@@ -4051,6 +4266,77 @@ var MeteorComposerDialog = class extends Dialog {
       }
    }
 
+
+   // Seconds between one frame and the next, read from the first and last
+   // frames of the session.
+   //
+   // Two files opened, about a second, and only when a ground-referenced
+   // composite is about to be built. It buys the one number the operator needs
+   // to judge how many frames to stack: how long a star trail it draws.
+   //
+   // Cached, because the answer cannot change while the dialog is open, and
+   // 0 when it cannot be read - which the estimate treats as "say nothing"
+   // rather than as a number.
+   frameIntervalSeconds(names) {
+      if (this._frameInterval !== undefined) {
+         return this._frameInterval;
+      }
+      this._frameInterval = 0;
+      if (!names || names.length < 2) {
+         return 0;
+      }
+      var dir = this.registeredDir;
+      this._frameInterval = frameIntervalSeconds(
+         dateObsOf(dir + "/" + names[0]),
+         dateObsOf(dir + "/" + names[names.length - 1]),
+         names.length);
+      return this._frameInterval;
+   }
+
+   // Build the background by taking a median of frames that were never
+   // aligned, and return where it was written.
+   //
+   // It is written to disk rather than kept in memory on purpose. It is the
+   // picture the composite is made of, the operator will want to look at it,
+   // and rebuilding it costs half a minute.
+   //
+   // Returns null after saying why.
+   buildStackedBackground(names, centrePath, count, outputPath) {
+      var window = medianStackFrames(names, baseName(centrePath), count);
+      if (window.length < MIN_STACK_FRAMES) {
+         (new MessageBox("There are not enough frames to take a median of.",
+                         TITLE, StdIcon.Error, StdButton.Ok)).execute();
+         return null;
+      }
+      var paths = [];
+      for (var i = 0; i < window.length; ++i) {
+         paths.push(this.registeredDir + "/" + window[i]);
+      }
+      var outDir = directoryOf(outputPath);
+      var stem = baseName(outputPath).replace(/\.[^.]*$/, "");
+      var backgroundPath = (outDir.length > 0 ? outDir + "/" : "")
+                         + stem + "_background.xisf";
+
+      this.progressLabel.text = "Stacking " + window.length + " frames...";
+      this.windowTitle = TITLE + " - stacking the background";
+      this.composeButton.text = "Stacking...";
+      console.writeln("<end><cbr>background: median of " + window.length
+                      + " frames, " + window[0] + " .. "
+                      + window[window.length - 1] + " (not aligned)");
+      CoreApplication.processEvents();
+
+      var startedAt = Date.now();
+      var written = integrateMedian(paths, backgroundPath);
+      if (written === null) {
+         (new MessageBox(
+            "The background could not be built. The Process Console says why.",
+            TITLE, StdIcon.Error, StdButton.Ok)).execute();
+         return null;
+      }
+      console.writeln("background: wrote " + written + "  ("
+                      + ((Date.now() - startedAt) / 1000).toFixed(1) + " s)");
+      return written;
+   }
 
    // How many candidates were judged a meteor. `acceptedTrails` groups them by
    // frame, so its length is a frame count, not a meteor count.
