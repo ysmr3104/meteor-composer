@@ -665,6 +665,129 @@ suite("detectCandidates leaves unrelated trails alone", function () {
       "and nothing was merged (fragmentsMerged " + got.fragmentsMerged + ")");
 });
 
+//----------------------------------------------------------------------------
+// A mask must not draw a line along its own boundary
+//----------------------------------------------------------------------------
+
+// Measured before this was written: with a `bottom 21%` exclusion mask over
+// 1045 fixed-tripod frames, a straight line spanning the whole width of the
+// field was detected in 1041 of them, four samples above the mask boundary.
+// Moving the mask moved the line - 10% put it at y=445, 21% at y=395, 40% at
+// y=299 - and taking the mask away took the line with it.
+//
+// The cause was in the background model: blocks with nothing usable in them
+// were left at zero, and the bilinear expansion then pulled the model down for
+// the real samples above them. Subtracting a background that is too low leaves
+// the sky standing above zero, right along the edge.
+
+suite("fillMissingBlocks takes its values from the neighbours", function () {
+   var coarse = core.makeField(4, 4);
+   coarse.known = new Uint8Array(16);
+   var i;
+   for (i = 0; i < 16; ++i) {
+      // Top two rows known and equal to 5, bottom two rows missing.
+      if (i < 8) {
+         coarse.data[i] = 5;
+         coarse.known[i] = 1;
+      }
+   }
+   core.fillMissingBlocks(coarse);
+   for (i = 0; i < 16; ++i) {
+      close(coarse.data[i], 5, 1e-12,
+            "block " + i + " ends up at the neighbours' value");
+   }
+
+   // Nothing to fill from is left alone rather than filled with a guess.
+   var empty = core.makeField(2, 2);
+   empty.known = new Uint8Array(4);
+   core.fillMissingBlocks(empty);
+   for (i = 0; i < 4; ++i) {
+      close(empty.data[i], 0, 1e-12, "an entirely masked field stays at zero");
+   }
+
+   // Without a `known` array - a plain downsample with no mask - it does
+   // nothing at all.
+   var plain = core.makeField(2, 2);
+   plain.data[0] = 3;
+   core.fillMissingBlocks(plain);
+   close(plain.data[0], 3, 1e-12, "an unmasked field is untouched");
+});
+
+suite("a masked band does not leave the sky standing along its edge", function () {
+   var W = 64, H = 64, CUT = 48;
+   var f = core.makeField(W, H);
+   var mask = new Uint8Array(W * H);
+   var x, y;
+   for (y = 0; y < H; ++y) {
+      for (x = 0; x < W; ++x) {
+         // Flat sky above the cut, bright ground below it - the shape of the
+         // real case, where the excluded band is the brightest thing in frame.
+         f.data[y * W + x] = (y < CUT) ? 0.010 : 0.500;
+         mask[y * W + x] = (y < CUT) ? 1 : 0;
+      }
+   }
+
+   var flat = core.removeBackground(f, 8, mask);
+
+   // The rows just above the boundary are the ones that were wrong. Their
+   // residual has to look like the rest of the sky, not like a step.
+   function worstRow(from, to) {
+      var worst = 0;
+      for (var yy = from; yy < to; ++yy) {
+         for (var xx = 0; xx < W; ++xx) {
+            var v = Math.abs(flat.data[yy * W + xx]);
+            if (v > worst) {
+               worst = v;
+            }
+         }
+      }
+      return worst;
+    }
+
+   var nearEdge = worstRow(CUT - 8, CUT);
+   var wellAbove = worstRow(8, 16);
+   ok(nearEdge < 1e-9,
+      "the sky just above the mask flattens to nothing (worst " + nearEdge + ")");
+   ok(nearEdge <= wellAbove + 1e-12,
+      "and is no worse than the sky far away from it");
+});
+
+suite("no candidate is found along the mask boundary", function () {
+   // The end-to-end shape of the bug. A pseudo-random sky so that the
+   // threshold has a sigma to work with; the generator is a plain LCG so the
+   // field is the same on every run.
+   var W = 128, H = 128, CUT = 96;
+   var f = core.makeField(W, H);
+   var mask = new Uint8Array(W * H);
+   var seed = 12345;
+   function rand() {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+   }
+   for (var y = 0; y < H; ++y) {
+      for (var x = 0; x < W; ++x) {
+         var i = y * W + x;
+         f.data[i] = (y < CUT ? 0.010 : 0.500) + 0.0002 * (rand() - 0.5);
+         mask[i] = (y < CUT) ? 1 : 0;
+      }
+   }
+
+   var r = core.detectCandidates(f, { backgroundFactor: 8, k: 5.0,
+                                      connectivity: 8, minPixels: 12,
+                                      minElongation: 6.0, minLength: 10.0 },
+                                 mask);
+   var wide = 0;
+   for (var c = 0; c < r.candidates.length; ++c) {
+      if (r.candidates[c].length > 0.8 * W) {
+         ++wide;
+      }
+   }
+   ok(wide === 0,
+      "nothing spanning the frame is detected along the boundary (found "
+      + wide + " of " + r.candidates.length + " candidates)");
+});
+
+
 
 console.log("\n============================================");
 console.log("passed: " + passed + "  failed: " + failed);
