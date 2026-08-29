@@ -83,6 +83,17 @@ suite("defaultOutputDir", function () {
    equal(paths.defaultOutputDir("/data/session/registered/Light_BIN-1_6024x4024"),
          "/data/session",
          "the WBPP layout resolves to the root above `registered`");
+
+   // A ground-referenced session reads `debayered` instead, and those frames
+   // are the operator's input data for exactly the same reason (requirements
+   // 3.4). Writing among them would be the same mistake in a different
+   // directory.
+   equal(paths.defaultOutputDir("/data/session/debayered/Light_BIN-1_6024x4024"),
+         "/data/session",
+         "and so does the layout a ground-referenced session reads");
+   equal(paths.defaultOutputDir("/data/session/debayered/group/"),
+         "/data/session",
+         "trailing separator and all");
    equal(paths.defaultOutputDir("/data/session/REGISTERED/Light_BIN-1"),
          "/data/session",
          "and the directory name is matched case-insensitively");
