@@ -33,7 +33,13 @@
 //   tools/run-remote.sh --pjsr tests/pjsr/probe_registered_vs_not.js
 //============================================================================
 
+// detection_core.js calls mergeCollinear() from candidate_ops.js. #include is
+// textual concatenation, so a missing one is not an error until the call is
+// reached - the first frame threw and the log stopped after its header. Same
+// include set as run_detection.js, which is known to work.
 #include "../../javascript/detection_core.js"
+#include "../../javascript/candidate_ops.js"
+#include "../../javascript/trail_colour.js"
 
 var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/mave";
 var REGISTERED_DIR = DATA_ROOT
