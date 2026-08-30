@@ -30,8 +30,8 @@
 
 #define OUT "/tmp/probe_mask_orientation.txt"
 
-var MASK = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/mask_file.jpg";
-var FRAMES = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/registered/"
+var MASK = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/test-sky/mask_file.jpg";
+var FRAMES = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/test-sky/registered/"
            + "Light_BIN-1_6024x4024_EXPOSURE-13.00s_FILTER-NoFilter_RGB";
 
 var lines = [];

@@ -32,7 +32,7 @@
 // records one too.
 #include "../../javascript/coordinate_system.js"
 
-var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test";
+var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/test-sky";
 var GROUP = "Light_BIN-1_6024x4024_EXPOSURE-13.00s_FILTER-NoFilter_RGB";
 var REGISTERED_DIR = DATA_ROOT + "/registered/" + GROUP;
 var OUTPUT_PATH = DATA_ROOT + "/detection_results.json";

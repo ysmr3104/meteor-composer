@@ -29,7 +29,7 @@
 
 #define OUT "/tmp/probe_strobe.txt"
 
-var DATA = "/Volumes/Extreme SSD/pi_works/meteor-composer-test";
+var DATA = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/test-sky";
 var GROUP = "Light_BIN-1_6024x4024_EXPOSURE-13.00s_FILTER-NoFilter_RGB";
 var FRAMES = [5337, 5338, 5339, 5340, 5341];
 

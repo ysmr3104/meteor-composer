@@ -18,8 +18,8 @@
 // of choosing: the detections and the background come out of the same files,
 // so no transform is needed and none can be got wrong.
 //
-// Measured on a 4h13m fixed-tripod session (NIKON ZR, 24mm, 13s x 1045),
-// provided by mave. Registration lost 327 of 1045 frames and left an average
+// Measured on a 4h13m fixed-tripod session (NIKON ZR, 24mm, 13s x 1045).
+// Registration lost 327 of 1045 frames and left an average
 // of 36.5% of each surviving frame with no data in it; the same frames read
 // straight from `debayered` lost none and had no empty area at all. See
 // requirements 3.4 for the paired table.
@@ -146,7 +146,8 @@ function middleFrame(names) {
 // satellites go; and the noise falls. What it costs is the stars, which are
 // the one thing in the picture that does move.
 //
-// Measured on mave's data (6064x4040 RGB, 13 s frames, probe_median_background):
+// Measured on the fixed-tripod data (6064x4040 RGB, 13 s frames,
+// probe_median_background):
 //
 //   frames   noise vs one frame   ideal (1.253/sqrt N)   sky turned   time
 //        5               0.5863                 0.5604       0.23 deg    3 s
@@ -204,7 +205,7 @@ function stackTrailEstimate(count, secondsPerFrame) {
 // The seconds between one frame and the next, from the first and last frames'
 // DATE-OBS.
 //
-// A night crosses midnight - mave's ran from 23:25:20 to 03:38:04 - so the
+// A night crosses midnight - that one ran from 23:25:20 to 03:38:04 - so the
 // last stamp is routinely smaller than the first. Subtracting them without
 // allowing for that gives a negative interval and, taken at face value, a
 // star trail measured in negative degrees.

@@ -32,7 +32,7 @@
 #include "../../javascript/trail_colour.js"
 #include "../../javascript/mask_geometry.js"
 
-var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/mave";
+var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/test-ground";
 var FRAMES_DIR = DATA_ROOT
    + "/debayered/Light_BIN-1_6064x4040_EXPOSURE-13.00s_FILTER-NoFilter_CFA";
 var LOG_PATH = DATA_ROOT + "/probe_mask_edge.log";

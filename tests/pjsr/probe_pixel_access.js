@@ -21,7 +21,7 @@
 //     -r="<repo>/tests/pjsr/probe_pixel_access.js" --force-exit
 //============================================================================
 
-var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test";
+var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/test-sky";
 var REGISTERED_DIR = DATA_ROOT + "/registered/Light_BIN-1_6024x4024_EXPOSURE-13.00s_FILTER-NoFilter_RGB";
 var SAMPLE_FRAME = REGISTERED_DIR + "/pct-2026-08-12_011807_ILCE-7M3_DSC05001_d_r.xisf";
 var LOG_PATH = DATA_ROOT + "/probe_pixel_access.log";

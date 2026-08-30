@@ -21,7 +21,7 @@
 
 var fs = require("fs");
 
-var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test";
+var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/test-sky";
 var RESULTS = DATA_ROOT + "/detection_results.json";
 var SESSION = DATA_ROOT + "/meteor_session.json";
 var COLOUR = DATA_ROOT + "/colour_samples.json";

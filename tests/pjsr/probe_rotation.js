@@ -26,7 +26,7 @@
 //   tools/run-remote.sh --pjsr tests/pjsr/probe_rotation.js
 //============================================================================
 
-var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test";
+var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/test-sky";
 var GROUP = "Light_BIN-1_6024x4024_EXPOSURE-13.00s_FILTER-NoFilter_RGB";
 var FRAME = DATA_ROOT + "/registered/" + GROUP
           + "/pct-2026-08-12_025329_ILCE-7M3_DSC05443_d_r.xisf";
