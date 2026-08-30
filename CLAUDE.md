@@ -188,6 +188,10 @@ PJSR スクリプトの出力は標準出力に出ません。ログとレポー
 
 `tests/ut/test_module_isolation.js` が指令を除去して `vm.Script` で**構文解析だけ**行う（実行はしない。実行には PJSR のオブジェクトモデル全部が必要になる）。指令の除去は行継続を考慮すること — `#feature-info` はバックスラッシュで 2 行にまたがっており、1 行目だけ消すと 2 行目が地の文として残る。
 
+同じファイルが、実行しないと分からないはずの不変条件も静的に押さえている。`#engine v8` が 1 行目にあること、`VERSION` の形、`#include` の解決、`MODULES` との一致、`currentDisplayedRow()` 以外から選択行を読まないこと、ラジオの `checked` をペアとして 1 か所からしか書かないこと。**「この形で書いてはいけない」に落とせるものはここへ落とす。**
+
+**静的検査をここ以外に作らないこと。** 2026-08-30 に `test_script_syntax.js` を別に作ったが、構文解析と `#include` の実在確認は**すでにこのファイルにあった**。検査が 2 か所にあると、次に足す人はどちらにも見つけられない。統合して 1 本に戻した。
+
 ## テストが自分の思い込みに同意することがある
 
 `edgeContact` は `connectedComponents` の返す画素を**インデックスと思って**書いた。実際は `{x, y, w}` のオブジェクトで、`pixels[i] % width` は `NaN`、`usable[NaN]` は `undefined` = 偽 になり、**全候補の全画素が「データ無しに隣接」と判定された。正解流星 31 本中 13 本（visual 3 本を含む）が誤って落ちる状態だった。**
@@ -357,13 +361,11 @@ tools/run-remote.sh --fetch tests/eval/baseline.json     # 成果物を持ち帰
 
 ## 配布時の注意
 
-**公開は Stage 4（コンポジット生成）まで実装してからです（2026-08-17 決定）。** Phase 1 完成時に公開する方針は撤回しました。当面は private のまま開発を続けるため、**署名・ビルド・配信の作業はまだ行いません**。判断の根拠と、この変更で失うものは [docs/requirements.md](docs/requirements.md) 9 章「公開時期の変更」にあります。
+**public・1.2.0 配信済みです（2026-08-30）。** main は保護済み（PR 必須・承認 0 件・管理者にも強制・force push 禁止・ブランチ削除禁止）。`pixinsight-scripts/integrate.sh` の `SOURCES` にも追加済みで、配信の実地確認（zip をダウンロードして SHA1 照合・旧版が 404・紹介ページの反映）まで済んでいます。
 
-**private が長く続くぶん、上の「main への直接 push は行わない」が効いてきます。** GitHub Free プランでは private リポジトリに branch protection を適用できず、git が拒否してくれない期間が延びます。
+> 2026-08-17 の時点では「Stage 4 まで実装してから公開する。当面 private のままなので署名・ビルド・配信は行わない」と書いてありました。**その状態はとうに過ぎています。** 経緯は [docs/requirements.md](docs/requirements.md) 9 章にあります。
 
-以下は公開時に必要になる事項です。
-
-新しいスクリプトなので、配信するには `pixinsight-scripts/integrate.sh` の `SOURCES` 配列への追記が必要です。
+リリースの手順は `~/projects/pixinsight/pixinsight-handbook/docs/release.md` にあります。**署名だけはユーザーの操作が必要**で、1 回のリリースにつき `.js` と `updates.xri` の 2 回です。
 
 **V8 専用（PixInsight 1.9.4 以降）です。** SpiderMonkey には対応しません。既存 2 本が両対応なのは SpiderMonkey で書いたものを移植した経緯によるもので、本スクリプトには当てはまりません。配信する `<platform>` は `1.9.4:9.9.9` の 1 つだけです。
 
