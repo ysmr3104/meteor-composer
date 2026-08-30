@@ -184,8 +184,8 @@ suite("the trail estimate refuses to guess", function () {
    equal(cs.stackTrailEstimate(15, -1), "", "nor a nonsensical one");
    equal(cs.stackTrailEstimate(1, 14), "", "one frame draws no trail");
 
-   // mave's data: 13 s exposures about 14 s apart. 15 frames spans 196 s,
-   // which is 0.82 degrees - the figure probe_median_background measured.
+   // The fixed-tripod data: 13 s exposures about 14 s apart. 15 frames spans
+   // 196 s, which is 0.82 degrees - what probe_median_background measured.
    var estimate = cs.stackTrailEstimate(15, 14);
    ok(estimate.indexOf("0.82") >= 0,
       "15 frames 14 s apart is 0.82 deg of trail (got: " + estimate + ")");
@@ -199,7 +199,7 @@ suite("a night that crosses midnight still has a positive interval", function ()
    equal(cs.observationSeconds("no date here"), null, "and rubbish is refused");
    equal(cs.observationSeconds(null), null, "as is null");
 
-   // mave's night: 23:25:20 to 03:38:04, 1045 frames. Subtracting the stamps
+   // That night: 23:25:20 to 03:38:04, 1045 frames. Subtracting the stamps
    // without allowing for midnight gives a negative interval, and a star trail
    // measured in negative degrees.
    var interval = cs.frameIntervalSeconds("2026-08-12T23:25:20",

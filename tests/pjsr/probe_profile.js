@@ -38,7 +38,7 @@
 
 #define OUT "/tmp/probe_profile.txt"
 
-var DATA = "/Volumes/Extreme SSD/pi_works/meteor-composer-test";
+var DATA = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/test-sky";
 var GROUP = "Light_BIN-1_6024x4024_EXPOSURE-13.00s_FILTER-NoFilter_RGB";
 var RESULTS = DATA + "/detection_results.json";
 var GT = DATA + "/../../../Users/ysmr/projects/pixinsight/meteor-composer/tests/eval/ground_truth.json";

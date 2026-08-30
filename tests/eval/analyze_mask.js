@@ -33,8 +33,8 @@
 var fs = require("fs");
 var path = require("path");
 
-var DEFAULT_RESULTS = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/detection_results.json";
-var DEFAULT_SESSION = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/meteor_session.json";
+var DEFAULT_RESULTS = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/test-sky/detection_results.json";
+var DEFAULT_SESSION = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/test-sky/meteor_session.json";
 
 var SCREEN_FACTOR = 8;
 

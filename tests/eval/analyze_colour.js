@@ -18,7 +18,7 @@
 var fs = require("fs");
 var path = require("path");
 
-var DEFAULT_INPUT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/colour_samples.json";
+var DEFAULT_INPUT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/test-sky/colour_samples.json";
 
 function fmt(v, digits) {
    if (v === null || v === undefined || isNaN(v)) {

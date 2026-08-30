@@ -42,7 +42,7 @@
 //   tools/run-remote.sh --pjsr tests/pjsr/make_mismatched_master.js
 //============================================================================
 
-var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test";
+var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/test-sky";
 var MASTER_PATH = DATA_ROOT
    + "/master/masterLight_BIN-1_6024x4024_EXPOSURE-13.00s_FILTER-NoFilter_RGB.xisf";
 var OUT_DIR = DATA_ROOT + "/master_broken";

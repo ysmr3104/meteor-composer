@@ -29,7 +29,7 @@
 //   tools/run-remote.sh --pjsr tests/pjsr/probe_mid_reference_empty.js
 //============================================================================
 
-var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/mave";
+var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/test-ground";
 var DEBAYERED_DIR = DATA_ROOT
    + "/debayered/Light_BIN-1_6064x4040_EXPOSURE-13.00s_FILTER-NoFilter_CFA";
 var OUT_DIR = DATA_ROOT + "/align_probe";

@@ -33,7 +33,7 @@
 //   tools/run-remote.sh --pjsr tests/pjsr/probe_fixed_tripod_input.js
 //============================================================================
 
-var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/mave";
+var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/test-ground";
 var REGISTERED_DIR = DATA_ROOT
    + "/registered/Light_BIN-1_6064x4040_EXPOSURE-13.00s_FILTER-NoFilter_RGB";
 var DEBAYERED_DIR = DATA_ROOT

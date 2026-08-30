@@ -24,7 +24,7 @@
 //   tools/run-remote.sh --pjsr tests/pjsr/compare_composites.js
 //============================================================================
 
-var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test";
+var DATA_ROOT = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/test-sky";
 
 // A: what the dialog wrote. B: what the probe wrote, kept aside beforehand.
 var A_COMPOSITE = DATA_ROOT + "/meteor_composite.xisf";

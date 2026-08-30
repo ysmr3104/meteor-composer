@@ -26,7 +26,7 @@
 //   tools/run-remote.sh --pjsr tests/pjsr/probe_channel_write.js
 //============================================================================
 
-var LOG_PATH = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/probe_channel_write.log";
+var LOG_PATH = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/test-sky/probe_channel_write.log";
 
 var W = 4, H = 3;
 

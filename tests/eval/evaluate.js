@@ -17,7 +17,7 @@
 var fs = require("fs");
 var path = require("path");
 
-var DEFAULT_RESULTS = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/detection_results.json";
+var DEFAULT_RESULTS = "/Volumes/Extreme SSD/pi_works/meteor-composer-test/test-sky/detection_results.json";
 var DEFAULT_GT = path.join(__dirname, "ground_truth.json");
 var BASELINE_PATH = path.join(__dirname, "baseline.json");
 
